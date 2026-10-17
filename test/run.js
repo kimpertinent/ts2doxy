@@ -68,12 +68,41 @@ const session = createSession(SRC, { wholeProgram: true });
 
 const outputs = new Map();
 const statsByFile = new Map();
+/*
+ * Declarations that could not be emitted on their original source line.
+ *
+ * Zero everywhere the source puts one declaration per line. The exceptions
+ * are declarations that share a source line with another one: Doxygen 1.9.8
+ * invents call references between those, so each one has to start a new
+ * output line (see canvas.js). Pinning the exact numbers here keeps that
+ * trade-off visible and catches drift appearing anywhere new.
+ */
+const EXPECTED_DRIFT = {
+  // Rectangle's second parameter property: parameter properties are emitted at
+  // the end of the class body (they are declared inside the constructor's
+  // parameter list and can never have a line of their own), and only the first
+  // one fits on the closing-brace line.
+  'shapes.ts': 1,
+  'app.ts': 0,
+  // Span's second parameter property, same reason
+  'overloads.ts': 1,
+  // written on purpose with several declarations per line
+  'compact.ts': 12,
+  'types.ts': 0,
+  'functions.ts': 0,
+  'inference.ts': 0,
+  'docs.ts': 0,
+  'legacy.js': 0,
+};
 for (const file of fs.readdirSync(SRC)) {
   const full = path.join(SRC, file);
   const result = session.translate(full);
   outputs.set(file, result.text);
   statsByFile.set(file, result.stats);
-  check(`${file}: translated without drift (drift=${result.stats.drift})`, result.stats.drift === 0);
+  const expected = EXPECTED_DRIFT[file];
+  check(`${file}: ${expected} declaration(s) off their source line`,
+    result.stats.drift === expected,
+    `drift=${result.stats.drift}, expected ${expected}`);
 }
 
 const shapes = outputs.get('shapes.ts');
@@ -698,6 +727,67 @@ if (!haveDoxygen()) {
           `references: ${refs.join(', ') || '(none)'}`);
       }
     }
+  }
+
+  /*
+   * Every edge Doxygen reports must be an edge the filter wrote.
+   *
+   * Doxygen 1.9.8 invents references when several declarations share one line:
+   * for `class P { public: int a(); public: void b(); };` on a single line it
+   * reports `P::a -> a, b`. Our output shares lines on purpose, to keep
+   * declaration line numbers exact, so this has to be checked rather than
+   * assumed.
+   *
+   * Edges are compared by refid, resolved to qualified names, so the
+   * comparison does not depend on how Doxygen chose to print a name.
+   */
+  {
+    const emitted = new Set();
+    for (const stats of statsByFile.values()) {
+      for (const edge of stats.edges || []) emitted.add(`${edge.from} -> ${edge.to}`);
+    }
+
+    // refid -> qualified name, over every compound Doxygen wrote
+    const qualifiedById = new Map();
+    const memberBlocks = [];
+    for (const file of fs.readdirSync(xmlDir)) {
+      if (!file.endsWith('.xml') || file === 'index.xml' || file === 'Doxyfile.xml') continue;
+      const xml = fs.readFileSync(path.join(xmlDir, file), 'utf8');
+      const compound = /<compoundname>([^<]*)<\/compoundname>/.exec(xml);
+      if (!compound) continue;
+      const re = /<memberdef\b([^>]*)>([\s\S]*?)<\/memberdef>/g;
+      let match;
+      while ((match = re.exec(xml)) !== null) {
+        const id = /\bid="([^"]+)"/.exec(match[1]);
+        const name = /<name>([^<]*)<\/name>/.exec(match[2]);
+        if (!id || !name) continue;
+        const qualified = `${compound[1]}::${name[1]}`;
+        qualifiedById.set(id[1], qualified);
+        memberBlocks.push({ qualified, block: match[2] });
+      }
+    }
+
+    const spurious = [];
+    const seenEdges = new Set();
+    for (const { qualified, block } of memberBlocks) {
+      for (const ref of block.matchAll(/<references\b([^>]*)>([^<]*)<\/references>/g)) {
+        const refid = /\brefid="([^"]+)"/.exec(ref[1]);
+        const target = refid ? qualifiedById.get(refid[1]) : null;
+        const edge = `${qualified} -> ${target || ref[2]}`;
+        seenEdges.add(edge);
+        if (!emitted.has(edge)) spurious.push(edge);
+      }
+    }
+
+    check(`doxygen: no call edges beyond the ${emitted.size} the filter emitted`,
+      spurious.length === 0,
+      `${spurious.length} edge(s) Doxygen added by itself:\n      ${[...new Set(spurious)].slice(0, 12).join('\n      ')}`);
+
+    // the other direction: edges the filter wrote that Doxygen dropped
+    const missing = [...emitted].filter((e) => !seenEdges.has(e));
+    check('doxygen: every emitted call edge was picked up',
+      missing.length === 0,
+      `${missing.length} missing:\n      ${[...new Set(missing)].slice(0, 12).join('\n      ')}`);
   }
 
   // caller graphs are the same data read backwards

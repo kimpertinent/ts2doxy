@@ -58,6 +58,11 @@ class Translator {
         recursive: 0,
         samples: [],
       },
+      // Every call statement written out, as `caller -> callee` qualified
+      // names. This is the ground truth a documentation build can be checked
+      // against: any edge Doxygen reports that is not in here was invented by
+      // Doxygen, not by the filter.
+      edges: [],
     };
     this.exports = collectExports(sourceFile);
     this.lineCount = sourceFile.getLineStarts().length;
@@ -202,10 +207,14 @@ class Translator {
     });
     const template = this.templatePrefix(node);
     const code = `${template}class ${name}${bases.length ? ` : ${bases.join(', ')}` : ''} {`;
-    this.canvas.put(this.anchorOf(node), code, doc);
+    this.canvas.put(this.anchorOf(node), code, doc, this.declOpts());
 
     this.emitMembers(node, {
-      name, isInterface, abstract, qualified: this.qualify(name),
+      name,
+      isInterface,
+      abstract,
+      qualified: this.qualify(name),
+      classEndLine: this.endLineOf(node),
     });
     this.canvas.put(this.endLineOf(node), '};', null, { shared: true });
 
@@ -232,6 +241,13 @@ class Translator {
       this.bodySource.set(signature, implementation);
     }
     let sawConstructor = false;
+    // Constructor parameter properties are declared inside the constructor's
+    // parameter list, so they can never have a line of their own. Emitting
+    // them at the end of the class body keeps them from pushing the real
+    // members off their lines (declarations may not share a line -- see
+    // canvas.js).
+    const deferred = [];
+    this.deferredMembers = deferred;
 
     for (const member of members) {
       const access = info.isInterface ? 'public' : accessOf(member);
@@ -262,6 +278,9 @@ class Translator {
       }
     }
 
+    for (const emit of deferred) emit();
+    this.deferredMembers = null;
+
     // `new Foo()` is extremely common even when the class declares no
     // constructor. Without a declared constructor Doxygen has no node to draw
     // the call edge to, so synthesize one (disable with --no-implicit-ctors).
@@ -271,7 +290,8 @@ class Translator {
         this.endLineOf(node),
         `public: ${info.name}();`,
         doc,
-        { shared: true },
+        // Nothing in the source to be faithful to: this one was invented.
+        this.declOpts({ synthetic: true }),
       );
     }
   }
@@ -291,6 +311,7 @@ class Translator {
       this.anchorOf(node),
       `${prefix}${info.name}(${params})${body.open}`,
       doc,
+      this.declOpts(),
     );
     this.closeBody(node, body);
     this.stats.methods++;
@@ -300,9 +321,11 @@ class Translator {
   /** `constructor(private x: number)` declares a field as well as a parameter. */
   emitParameterProperties(node, info) {
     for (const p of node.parameters) {
-      if (ts.getCombinedModifierFlags(p) & (MF.Private | MF.Protected | MF.Public | MF.Readonly)) {
-        this.emitParameterProperty(p, info);
+      if (!(ts.getCombinedModifierFlags(p) & (MF.Private | MF.Protected | MF.Public | MF.Readonly))) {
+        continue;
       }
+      if (this.deferredMembers) this.deferredMembers.push(() => this.emitParameterProperty(p, info));
+      else this.emitParameterProperty(p, info);
     }
   }
 
@@ -314,10 +337,10 @@ class Translator {
       notes: ['@note Declared as a TypeScript constructor parameter property.'],
     });
     this.canvas.put(
-      this.anchorOf(p),
+      info.classEndLine || this.anchorOf(p),
       `${accessOf(p)}: ${konst}${type} ${name};`,
       doc,
-      { shared: true },
+      this.declOpts(),
     );
     this.stats.fields++;
   }
@@ -356,6 +379,7 @@ class Translator {
       this.anchorOf(node),
       `${prefix}${template}${specifiers.join(' ')}${specifiers.length ? ' ' : ''}${ret} ${name}(${params})${body.open}`,
       doc,
+      this.declOpts(),
     );
     if (!isAbstract) this.closeBody(node, body);
     this.stats.methods++;
@@ -383,6 +407,7 @@ class Translator {
       this.anchorOf(node),
       `${prefix}${specifiers.join(' ')}${specifiers.length ? ' ' : ''}${type} ${name}${init ? ` = ${init}` : ''};`,
       doc,
+      this.declOpts(),
     );
     this.stats.fields++;
     return undefined;
@@ -407,6 +432,7 @@ class Translator {
       this.anchorOf(node),
       `${prefix}${specifiers}${ret} ${name}(${params})${body.open}`,
       doc,
+      this.declOpts(),
     );
     this.closeBody(fn, body);
     this.stats.methods++;
@@ -436,6 +462,7 @@ class Translator {
       this.anchorOf(node),
       `${prefix}${specifiers}${ret} ${name}(${params})${body.open}`,
       doc,
+      this.declOpts(),
     );
     if (!isAbstract) this.closeBody(node, body);
     this.stats.methods++;
@@ -447,7 +474,7 @@ class Translator {
     const doc = buildDoc(node, this.ctx, {
       notes: [`@note TypeScript index signature ${escapeInlineCode(typeSourceText(node))}.`],
     });
-    this.canvas.put(this.anchorOf(node), `${prefix}${ret} operator[](${params});`, doc);
+    this.canvas.put(this.anchorOf(node), `${prefix}${ret} operator[](${params});`, doc, this.declOpts());
     this.stats.methods++;
   }
 
@@ -459,7 +486,7 @@ class Translator {
       paramNames: this.lastParamNames,
       returnsVoid: ret === 'void',
     });
-    this.canvas.put(this.anchorOf(node), `${prefix}${ret} operator()(${params});`, doc);
+    this.canvas.put(this.anchorOf(node), `${prefix}${ret} operator()(${params});`, doc, this.declOpts());
     this.stats.methods++;
   }
 
@@ -468,7 +495,7 @@ class Translator {
     const doc = buildDoc(node, this.ctx, {
       notes: [`@note TypeScript construct signature ${escapeInlineCode(typeSourceText(node))}.`],
     });
-    this.canvas.put(this.anchorOf(node), `${prefix}${info.name}(${params});`, doc);
+    this.canvas.put(this.anchorOf(node), `${prefix}${info.name}(${params});`, doc, this.declOpts());
     this.stats.methods++;
   }
 
@@ -483,12 +510,12 @@ class Translator {
     const exported = this.exportNote(node, name);
     if (exported) notes.push(exported);
     const doc = buildDoc(node, this.ctx, { notes });
-    this.canvas.put(this.anchorOf(node), `enum class ${name} {`, doc);
+    this.canvas.put(this.anchorOf(node), `enum class ${name} {`, doc, this.declOpts());
     for (const member of node.members) {
       const mname = nameText(member.name) || 'VALUE';
       const value = literalInitializer(member.initializer);
       const mdoc = buildDoc(member, this.ctx, {});
-      this.canvas.put(this.anchorOf(member), `${mname}${value ? ` = ${value}` : ''},`, mdoc);
+      this.canvas.put(this.anchorOf(member), `${mname}${value ? ` = ${value}` : ''},`, mdoc, this.declOpts());
     }
     this.canvas.put(this.endLineOf(node), '};', null, { shared: true });
     this.stats.enums++;
@@ -510,7 +537,7 @@ class Translator {
     const code = template
       ? `${template}using ${name} = ${target};`
       : `typedef ${target} ${name};`;
-    this.canvas.put(this.anchorOf(node), code, doc);
+    this.canvas.put(this.anchorOf(node), code, doc, this.declOpts());
     this.stats.typedefs++;
   }
 
@@ -540,6 +567,7 @@ class Translator {
       this.anchorOf(node),
       `${template}${ret} ${name}(${params})${body.open}`,
       doc,
+      this.declOpts(),
     );
     this.closeBody(node, body);
     this.stats.functions++;
@@ -599,6 +627,7 @@ class Translator {
       this.anchorOf(decl),
       `${template}${ret} ${name}(${params})${body.open}`,
       doc,
+      this.declOpts(),
     );
     this.closeBody(fn, body);
     this.stats.functions++;
@@ -611,7 +640,7 @@ class Translator {
         ? `@note TypeScript ambient module declaration ${escapeInlineCode(node.name.text)}.`
         : '@note TypeScript `namespace` declaration.'],
     });
-    this.canvas.put(this.anchorOf(node), `namespace ${name} {`, doc);
+    this.canvas.put(this.anchorOf(node), `namespace ${name} {`, doc, this.declOpts());
     this.scopeStack.push(name);
     if (node.body && ts.isModuleBlock(node.body)) {
       this.emitStatements(node.body.statements);
@@ -651,6 +680,9 @@ class Translator {
     for (const item of unresolved) {
       if (totals.samples.length < 20) totals.samples.push(item.text);
     }
+    for (const call of calls) {
+      this.stats.edges.push({ from: name, to: call.name });
+    }
     return { open: ' {', calls, node, unresolved };
   }
 
@@ -671,6 +703,24 @@ class Translator {
       }
     }
     this.canvas.put(this.endLineOf(body.node), '}', null, { shared: true });
+  }
+
+  /**
+   * Canvas options for a declaration.
+   *
+   * Declarations must not share an output line: Doxygen 1.9.8 invents
+   * cross-references between declarations on the same line and merges the
+   * bodies of inline member functions that share one (see canvas.js). The
+   * `--share-declaration-lines` option restores the old behaviour, which
+   * keeps every declaration on its exact source line at the cost of those
+   * spurious edges.
+   */
+  declOpts(extra) {
+    return {
+      solo: true,
+      allowShared: this.opts.shareDeclarationLines === true,
+      ...extra,
+    };
   }
 
   /** Qualified name of something declared in the current scope. */

@@ -113,6 +113,11 @@ ENABLE_PREPROCESSING   = NO
 # Source browser and cross references
 # ---------------------------------------------------------------------------
 
+# Required for the call and caller graphs, not optional: Doxygen only records
+# cross-references while it runs the source browser pass. With
+# SOURCE_BROWSER = NO every edge ts2doxy emits is lost, and Doxygen replaces
+# them with bogus self-references (measured on the test fixtures: 35 real
+# edges gone, 25 invented ones in their place).
 SOURCE_BROWSER         = YES
 INLINE_SOURCES         = NO
 STRIP_CODE_COMMENTS    = NO

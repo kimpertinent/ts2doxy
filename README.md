@@ -61,6 +61,7 @@ FILTER_SOURCE_FILES = NO
 | --- | --- |
 | `EXTENSION_MAPPING = ts=C++` | Doxygen has no TypeScript parser. Its built-in `Javascript` parser does not produce class, inheritance or call graphs, which is the whole point of this filter. |
 | `FILTER_SOURCE_FILES = NO` | Keeps the source browser showing the original TypeScript. The filter preserves line numbers, so references still land correctly. |
+| `SOURCE_BROWSER = YES` | **Required for the call and caller graphs.** Doxygen only records cross-references while it runs the source browser pass. With `SOURCE_BROWSER = NO` every edge the filter emits is lost and Doxygen puts bogus self-references in their place (measured on the test fixtures: 35 real edges gone, 25 invented). |
 | `EXTRACT_ALL = YES` | Undocumented declarations are translated too; this makes them appear, and keeps call graphs complete. |
 | `ENABLE_PREPROCESSING = NO` | The pseudo-code contains no preprocessor directives. (Doxygen 1.9.8 ignores `#line` directives, which is why line numbers are preserved by layout instead.) |
 | `BUILTIN_STL_SUPPORT = YES` | TypeScript function types are emitted as `std::function<...>`; this stops Doxygen documenting those as user classes. |
@@ -178,6 +179,32 @@ the overload signatures are callable. The extracted body is attached to the
 **last overload signature**, which keeps the documented API exactly as written
 and still yields the call edges.
 
+### One declaration per output line
+
+Doxygen 1.9.8 invents cross-references between declarations that share a
+source line. `class P { public: int a(); public: void b(); };` written on one
+line is reported as `P::a -> a, b`, and two inline member bodies on one line
+have their calls merged into the first, losing the second one's edges.
+Separators (`;;`, comments, repeated access specifiers) make no difference,
+and Doxygen ignores `#line` directives in filter output, so the only cure is
+to give every declaration a line of its own.
+
+That is what the filter does, which costs the exact line number of every
+declaration after the first on a compact source line:
+`interface Part { start(): void; stop(): void; }` keeps its line for `Part`
+but reports `start` and `stop` one and two lines further down. Code with one
+declaration per line — the overwhelming majority — is unaffected: the test
+suite reports **zero** drifted declarations for every fixture that is written
+that way.
+
+Constructor parameter properties are declared inside the constructor's
+parameter list, so they can never have a line of their own either; they are
+emitted at the end of the class body.
+
+`--share-declaration-lines` restores the old behaviour (exact line numbers for
+every declaration, at the price of those invented edges). It is off by
+default: a wrong call graph is worse than a line number that is off by one.
+
 ### Measuring the resolution rate
 
 Add `--stats <file>` to the filter command, run Doxygen, then aggregate:
@@ -244,6 +271,8 @@ note is prefixed with `%` to stop `AUTOLINK_SUPPORT` turning boilerplate like
   graph edges, because there is no function to attribute them to.
 * Call statements are emitted without arguments, so a call to an overloaded
   function links to one of its overloads rather than the matching one.
+* Declarations that share a source line do not keep their exact line number;
+  see “One declaration per output line” above.
 * Decorators are not reflected in the output.
 * Doxygen's `Javascript` parser is not used at all; `.js` files go through the
   same C++ pseudo-code path as TypeScript.

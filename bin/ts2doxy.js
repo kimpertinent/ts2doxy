@@ -31,11 +31,17 @@ Options:
                              instead of just the input file's import closure
       --no-implicit-ctors    do not synthesize constructors for classes that
                              declare none (loses "new Foo()" call edges)
+      --share-declaration-lines
+                             keep every declaration on its exact source line
+                             even when several share one. Doxygen 1.9.8 then
+                             invents call-graph edges between them, so this is
+                             off by default
       --no-virtual           do not mark instance methods virtual
       --no-bodies            emit declarations only (no call-graph bodies)
       --list-unresolved      note unresolved call sites in the output as
                              comments (diagnostic aid)
       --stats <file>         append one JSON line of statistics per file
+      --stats-edges          include the emitted call edges in --stats output
       --strict               exit non-zero on errors instead of skipping
   -q, --quiet                suppress warnings on stderr
 `;
@@ -54,10 +60,12 @@ function parseArgs(argv) {
       case '-o': case '--out': opts.out = next(); break;
       case '--whole-program': opts.wholeProgram = true; break;
       case '--no-implicit-ctors': opts.implicitCtors = false; break;
+      case '--share-declaration-lines': opts.shareDeclarationLines = true; break;
       case '--no-virtual': opts.virtualMethods = false; break;
       case '--no-bodies': opts.emitBodies = false; break;
       case '--list-unresolved': opts.listUnresolved = true; break;
       case '--stats': opts.stats = next(); break;
+      case '--stats-edges': opts.statsEdges = true; break;
       case '--strict': opts.strict = true; break;
       case '-q': case '--quiet': opts.quiet = true; break;
       default:
@@ -77,7 +85,9 @@ function warn(opts, message) {
 function recordStats(opts, stats) {
   if (!opts.stats) return;
   try {
-    fs.appendFileSync(opts.stats, `${JSON.stringify(stats)}\n`);
+    // The edge list is large on real projects, so it is opt-in.
+    const record = opts.statsEdges ? stats : { ...stats, edges: undefined };
+    fs.appendFileSync(opts.stats, `${JSON.stringify(record)}\n`);
   } catch (err) {
     warn(opts, `could not write statistics: ${err.message}`);
   }
