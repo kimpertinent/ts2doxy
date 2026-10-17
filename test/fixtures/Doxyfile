@@ -98,7 +98,7 @@ INHERIT_DOCS           = YES
 
 # ts2doxy writes `@param`/`@return`/... as Javadoc-style tags and relies on
 # Markdown for the prose it copies out of JSDoc comments.
-JAVADOC_AUTOBRIEF      = YES
+JAVADOC_AUTOBRIEF      = NO
 MARKDOWN_SUPPORT       = YES
 AUTOLINK_SUPPORT       = YES
 

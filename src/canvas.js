@@ -35,6 +35,8 @@
  * (verified against Doxygen 1.9.8) and still do.
  */
 
+const { neutralizeCommentDelimiters } = require('./doc');
+
 class Canvas {
   constructor() {
     /** @type {{anchor:number, doc:string[], code:string}[]} */
@@ -63,7 +65,7 @@ class Canvas {
       code,
       doc: doc || null,
       shared: !!(opts && opts.shared),
-      solo: !!(opts && opts.solo) && !(opts && opts.allowShared),
+      solo: !!(opts && opts.solo),
       synthetic: !!(opts && opts.synthetic),
     });
   }
@@ -141,9 +143,8 @@ function compactDoc(lines) {
     .map((l) => l.replace(/^@par\s+(.*)$/, (match, title) => `${title.replace(/:$/, '')}:`)
       .replace(/^@par$/, ''))
     .filter((l) => l.length)
-    .join(' ')
-    .replace(/\*\//g, '*\\/');
-  return '/** ' + body + ' */';
+    .join(' ');
+  return '/** ' + neutralizeCommentDelimiters(body) + ' */';
 }
 
 module.exports = { Canvas, compactDoc, docVariants };

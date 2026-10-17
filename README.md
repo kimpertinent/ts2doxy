@@ -143,6 +143,47 @@ Classes that declare no constructor get a synthesized one, documented as such.
 Without it Doxygen has no node to draw `new Foo()` call edges to. Use
 `--no-implicit-ctors` to turn that off.
 
+## Performance and pre-generation mode
+
+Doxygen runs an input filter once per file, and each run has to build a
+TypeScript program and a type checker before it can resolve anything. On one
+fixture file that breaks down as 199 ms to load the `typescript` module, 345 ms
+to build the program, 115 ms for the checker and 89 ms of actual translation —
+so the fixed cost is nine tenths of it. Doxygen also filters a file more than
+once per run (992 invocations for 496 files in the measurement below).
+
+Measured on [TypeORM](https://github.com/typeorm/typeorm) 1.1.2,
+`packages/typeorm/src`, 496 source files, with Doxygen 1.9.8 (XML output,
+`HAVE_DOT = NO` on both sides so the comparison is about reading the project):
+
+| | translation | Doxygen | total |
+| --- | --- | --- | --- |
+| per-file filtering (`FILTER_PATTERNS`) | — | — | **1697 s** |
+| pre-generation (`ts2doxy pregen`) | 6.1 s | 4 s | **~10 s** |
+
+So pre-generation is worth it as soon as a project has more than a handful of
+files:
+
+```sh
+ts2doxy pregen src --out doxygen-pregen
+```
+
+It builds one program for the whole tree (1.7 s of the 6.1 s above) and writes
+a mirror of it, 9 ms per file. Then point Doxygen at that tree and drop the
+filter — `INPUT = doxygen-pregen`, no `FILTER_PATTERNS`; `EXTENSION_MAPPING` is
+still needed. `Doxyfile.sample` has the exact settings in a comment.
+
+The two modes produce **byte-identical** output (the test suite checks that for
+every fixture), so the choice is only about speed and one trade-off: with
+pre-generation Doxygen has no original file to show, so the source browser
+lists the generated pseudo-code instead of your TypeScript. Line numbers still
+match the sources. Per-file filtering keeps the real TypeScript in the source
+browser, which is why it remains the default in `Doxyfile.sample`.
+
+Pre-generation exits non-zero if any file failed, and tells you where the
+time went, how many declarations could not keep their source line, and the
+call resolution rate.
+
 ## Call graphs
 
 Doxygen builds call and caller graphs by parsing function *bodies*, so every
@@ -201,10 +242,6 @@ Constructor parameter properties are declared inside the constructor's
 parameter list, so they can never have a line of their own either; they are
 emitted at the end of the class body.
 
-`--share-declaration-lines` restores the old behaviour (exact line numbers for
-every declaration, at the price of those invented edges). It is off by
-default: a wrong call graph is worse than a line number that is off by one.
-
 ### Measuring the resolution rate
 
 Add `--stats <file>` to the filter command, run Doxygen, then aggregate:
@@ -260,6 +297,49 @@ counterpart there, so they are collected into a note instead of producing a
 Doxygen warning about an unknown argument. The leading word of every generated
 note is prefixed with `%` to stop `AUTOLINK_SUPPORT` turning boilerplate like
 "Default value" into a link to a class of that name.
+
+## Results on a real project
+
+TypeORM 1.1.2, `packages/typeorm/src` (496 files), documented through
+pre-generation mode:
+
+* **693** classes and interfaces, 3665 methods, 3031 fields, 223 typedefs.
+* **413 of 413** inheritance edges match the TypeScript source exactly —
+  compared by reading `extends`/`implements` out of the TypeScript AST and
+  diffing against Doxygen's XML. No missing edges, no invented ones.
+* **7255** call references recorded, from 9681 emitted call statements.
+* Call resolution: **57.0%** of all 16993 call sites, **92.8%** of the calls
+  that go into the documented sources. The rest are calls into `lib.d.ts` and
+  `node_modules` (38.6%), which can never become edges because Doxygen has no
+  node for them, plus 3.1% unresolved and 1.3% indirect. The unresolved ones
+  are concentrated in the database drivers and are almost all calls on
+  `any`-typed client objects from optional dependencies
+  (`this.client.get`, `this.redis.createClient`) — exactly the case the type
+  checker cannot follow.
+* **82** declarations out of ~10000 could not keep their source line, all of
+  them sharing a line with another declaration.
+* **8 Doxygen warnings**, none caused by the translation: eight functions in
+  the two vendored MongoDB typings files document some of their parameters and
+  not others, and Doxygen reports a partially documented parameter list. It
+  does the same for C++ sources with the same gaps.
+* A full run with HTML and Graphviz takes **75 s** on top of the 6.1 s of
+  pre-generation, and produces **10514** diagrams: 764 inheritance graphs,
+  1362 collaboration graphs, 4230 call graphs and 3622 caller graphs.
+
+To reproduce, with the project checked out next to this one:
+
+```sh
+# tsconfig.json of typeorm extends @tsconfig/node20, so its deps must be there
+cd typeorm/packages/typeorm && npm install
+ts2doxy pregen src --out /tmp/typeorm-pregen --stats /tmp/typeorm-stats.jsonl
+ts2doxy report /tmp/typeorm-stats.jsonl
+# then run Doxygen over /tmp/typeorm-pregen with GENERATE_XML = YES, and:
+node test/verify-project.js typeorm/packages/typeorm/src <xml-dir>
+```
+
+`test/verify-project.js` reads `extends`/`implements` out of the TypeScript
+AST, reads `<basecompoundref>` out of Doxygen's XML and diffs the two, so the
+claim above is checkable on any project rather than taken on trust.
 
 ## Known limitations
 

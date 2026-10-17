@@ -69,6 +69,28 @@ FILTER_PATTERNS        = *.ts="node ./node_modules/ts2doxy/bin/ts2doxy.js" \
 # and other inputs untouched.
 # INPUT_FILTER         = "node ./node_modules/ts2doxy/bin/ts2doxy.js"
 
+# ---------------------------------------------------------------------------
+# Pre-generation mode (for large projects)
+# ---------------------------------------------------------------------------
+#
+# Doxygen runs the filter once per file, and each run has to build a
+# TypeScript program and type checker first -- about 2 s per file on a
+# medium-sized project, i.e. minutes of filtering on every documentation run.
+# Pre-generation pays that once:
+#
+#     ts2doxy pregen src --out doxygen-pregen
+#
+# Then point Doxygen at the generated tree and remove the filter: comment out
+# FILTER_PATTERNS above and use
+#
+#     INPUT               = doxygen-pregen
+#     FILTER_SOURCE_FILES = NO
+#
+# EXTENSION_MAPPING is still needed. The one thing you give up is the source
+# browser showing your real TypeScript: with no original file in INPUT,
+# Doxygen lists the generated pseudo-code instead. Line numbers still match
+# the TypeScript sources.
+
 # Critical: keep this at NO.  ts2doxy emits every declaration on the line it
 # occupies in the original file, so with FILTER_SOURCE_FILES = NO the source
 # browser shows the real TypeScript and "Definition at line N" is correct.
@@ -98,7 +120,13 @@ INHERIT_DOCS           = YES
 
 # ts2doxy writes `@param`/`@return`/... as Javadoc-style tags and relies on
 # Markdown for the prose it copies out of JSDoc comments.
-JAVADOC_AUTOBRIEF      = YES
+#
+# Keep JAVADOC_AUTOBRIEF off: ts2doxy marks the brief with `@brief` itself.
+# The heuristic ends the brief at the first `.` that is not followed by a
+# letter, even in the middle of an element -- a comment mentioning
+# `${a}.${b}` then has its `<tt>` split across brief and detailed
+# description, which Doxygen reports as an unclosed tag.
+JAVADOC_AUTOBRIEF      = NO
 MARKDOWN_SUPPORT       = YES
 AUTOLINK_SUPPORT       = YES
 

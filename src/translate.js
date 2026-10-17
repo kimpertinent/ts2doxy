@@ -17,12 +17,13 @@
 const ts = require('typescript');
 const { Canvas } = require('./canvas');
 const { extractCalls } = require('./calls');
-const { escapeInlineCode } = require('./doc');
-const { buildDoc, findFileComment } = require('./jsdoc');
+const { escapeInlineCode, neutralizeCommentDelimiters } = require('./doc');
+const { buildDoc, documentedParamNames, findFileComment } = require('./jsdoc');
 const { namespaceSegmentsForFile, sanitizeIdentifier } = require('./names');
 const { nameText } = require('./symbols');
 const {
-  mapCheckerType, mapHeritageName, mapInferredType, mapTypeNode, typeSourceText,
+  mapCheckerType, mapHeritageName, mapInferredType, mapTypeNode,
+  sourceTextWithoutComments, typeSourceText,
 } = require('./types');
 
 /** Modifier flags we query repeatedly. */
@@ -71,6 +72,8 @@ class Translator {
     this.ctx.skipJsDoc = new Set(this.fileComment ? [this.fileComment] : []);
     // Overload signature -> the implementation whose body it borrows.
     this.bodySource = new Map();
+    // Declaration -> other declarations whose documentation it absorbed.
+    this.mergedDocs = new Map();
   }
 
   /* ------------------------------------------------------------------ *
@@ -156,8 +159,10 @@ class Translator {
     for (const [signature, implementation] of bodySource) {
       this.bodySource.set(signature, implementation);
     }
+    const collisions = this.findSignatureCollisions(statements);
     for (const st of statements) {
       if (implementations.has(st)) continue; // overload implementation signature
+      if (collisions.has(st)) continue; // same signature as an earlier overload
       this.emitStatement(st);
     }
   }
@@ -195,8 +200,8 @@ class Translator {
     }
 
     const notes = [];
-    if (isInterface) notes.push('@note TypeScript `interface`: all members are public and abstract.');
-    if (abstract) notes.push('@note TypeScript `abstract class`.');
+    if (isInterface) notes.push(`@note TypeScript ${escapeInlineCode('interface')}: all members are public and abstract.`);
+    if (abstract) notes.push(`@note TypeScript ${escapeInlineCode('abstract class')}.`);
     const exported = this.exportNote(node, name);
     if (exported) notes.push(exported);
     for (const extra of this.typeParameterNotes(node)) notes.push(extra);
@@ -248,6 +253,7 @@ class Translator {
     // canvas.js).
     const deferred = [];
     this.deferredMembers = deferred;
+    const collisions = this.findSignatureCollisions(members);
 
     for (const member of members) {
       const access = info.isInterface ? 'public' : accessOf(member);
@@ -261,7 +267,7 @@ class Translator {
         } else {
           this.emitConstructor(member, info, prefix);
         }
-      } else if (implementations.has(member)) {
+      } else if (implementations.has(member) || collisions.has(member)) {
         continue;
       } else if (ts.isMethodDeclaration(member) || ts.isMethodSignature(member)) {
         this.emitMethod(member, info, prefix);
@@ -304,6 +310,7 @@ class Translator {
       notes,
       paramNames: this.lastParamNames,
       returnsVoid: true,
+      mergeFrom: this.mergedDocs.get(node),
     });
     const bodyNode = this.bodySource.get(node) || node;
     const body = this.bodyFor(bodyNode, `${info.qualified}::${info.name}`);
@@ -356,7 +363,7 @@ class Translator {
     const notes = [];
     const sig = this.signatureNote(node);
     if (sig) notes.push(sig);
-    if (hasFlag(node, MF.Async)) notes.push('@note `async` function.');
+    if (hasFlag(node, MF.Async)) notes.push(`@note ${escapeInlineCode('async')} function.`);
     if (node.asteriskToken) notes.push('@note Generator function.');
     if (node.questionToken) notes.push('@note Optional member.');
     const doc = buildDoc(node, this.ctx, {
@@ -364,6 +371,7 @@ class Translator {
       paramNames: this.lastParamNames,
       typeParamNames: this.typeParamNames(node),
       returnsVoid: ret === 'void',
+      mergeFrom: this.mergedDocs.get(node),
     });
 
     const specifiers = [];
@@ -400,7 +408,7 @@ class Translator {
     const sig = this.signatureNote(node);
     if (sig) notes.push(sig);
     if (node.questionToken) notes.push('@note Optional member.');
-    if (hasFlag(node, MF.Abstract)) notes.push('@note `abstract` member.');
+    if (hasFlag(node, MF.Abstract)) notes.push(`@note ${escapeInlineCode('abstract')} member.`);
     const doc = buildDoc(node, this.ctx, { notes });
     const init = literalInitializer(initializer);
     this.canvas.put(
@@ -442,7 +450,7 @@ class Translator {
   emitAccessor(node, info, prefix) {
     const name = nameText(node.name) || 'property';
     const isGetter = ts.isGetAccessor(node);
-    const notes = [isGetter ? '@note TypeScript getter (`get`).' : '@note TypeScript setter (`set`).'];
+    const notes = [isGetter ? `@note TypeScript getter (${escapeInlineCode('get')}).` : `@note TypeScript setter (${escapeInlineCode('set')}).`];
     const sig = this.signatureNote(node);
     if (sig) notes.push(sig);
     const specifiersRet = isGetter ? this.returnType(node) : 'void';
@@ -506,7 +514,7 @@ class Translator {
   emitEnum(node) {
     const name = nameText(node.name);
     const notes = [];
-    if (hasFlag(node, MF.Const)) notes.push('@note TypeScript `const enum`.');
+    if (hasFlag(node, MF.Const)) notes.push(`@note TypeScript ${escapeInlineCode('const enum')}.`);
     const exported = this.exportNote(node, name);
     if (exported) notes.push(exported);
     const doc = buildDoc(node, this.ctx, { notes });
@@ -549,7 +557,7 @@ class Translator {
     const notes = [];
     const sig = this.signatureNote(node);
     if (sig) notes.push(sig);
-    if (hasFlag(node, MF.Async)) notes.push('@note `async` function.');
+    if (hasFlag(node, MF.Async)) notes.push(`@note ${escapeInlineCode('async')} function.`);
     if (node.asteriskToken) notes.push('@note Generator function.');
     const exported = this.exportNote(node, name);
     if (exported) notes.push(exported);
@@ -559,6 +567,7 @@ class Translator {
       paramNames: this.lastParamNames,
       typeParamNames: this.typeParamNames(node),
       returnsVoid: ret === 'void',
+      mergeFrom: this.mergedDocs.get(node),
     });
     const template = this.templatePrefix(node);
     const bodyNode = this.bodySource.get(node) || node;
@@ -612,7 +621,7 @@ class Translator {
     const notes = ['@note Declared as a TypeScript arrow function / function expression.'];
     const sig = this.signatureNote(decl);
     if (sig) notes.push(sig);
-    if (hasFlag(fn, MF.Async)) notes.push('@note `async` function.');
+    if (hasFlag(fn, MF.Async)) notes.push(`@note ${escapeInlineCode('async')} function.`);
     const exported = this.exportNote(decl, name);
     if (exported) notes.push(exported);
     const doc = buildDoc(decl.jsDoc ? decl : decl.parent.parent, this.ctx, {
@@ -638,7 +647,7 @@ class Translator {
     const doc = buildDoc(node, this.ctx, {
       notes: [ts.isStringLiteral(node.name)
         ? `@note TypeScript ambient module declaration ${escapeInlineCode(node.name.text)}.`
-        : '@note TypeScript `namespace` declaration.'],
+        : `@note TypeScript ${escapeInlineCode('namespace')} declaration.`],
     });
     this.canvas.put(this.anchorOf(node), `namespace ${name} {`, doc, this.declOpts());
     this.scopeStack.push(name);
@@ -696,7 +705,7 @@ class Translator {
       for (const item of body.unresolved || []) {
         this.canvas.put(
           item.line,
-          `/* ts2doxy: unresolved call ${item.text.replace(/\*\//g, '* /')} */`,
+          `/* ts2doxy: unresolved call ${neutralizeCommentDelimiters(item.text)} */`,
           null,
           { shared: true },
         );
@@ -710,17 +719,10 @@ class Translator {
    *
    * Declarations must not share an output line: Doxygen 1.9.8 invents
    * cross-references between declarations on the same line and merges the
-   * bodies of inline member functions that share one (see canvas.js). The
-   * `--share-declaration-lines` option restores the old behaviour, which
-   * keeps every declaration on its exact source line at the cost of those
-   * spurious edges.
+   * bodies of inline member functions that share one (see canvas.js).
    */
   declOpts(extra) {
-    return {
-      solo: true,
-      allowShared: this.opts.shareDeclarationLines === true,
-      ...extra,
-    };
+    return { solo: true, ...extra };
   }
 
   /** Qualified name of something declared in the current scope. */
@@ -743,6 +745,87 @@ class Translator {
       return `typename ${name}${dflt}`;
     });
     return `template< ${parts.join(', ')} > `;
+  }
+
+  /**
+   * Group function-like declarations whose emitted signatures are identical.
+   *
+   * Distinct TypeScript overloads can map onto one C++ signature -- literal
+   * types collapse to their primitive, unions and object types to a single
+   * identifier -- and emitting both would declare the same member twice.
+   * Doxygen then merges their documentation and reports the duplicated
+   * `@param` sections. Only the first is emitted; the comments of the others
+   * are merged into it.
+   *
+   * @returns a Map from each dropped declaration to the one that replaces it.
+   */
+  findSignatureCollisions(nodes) {
+    const collisions = new Map();
+    const byKey = new Map();
+    for (const node of nodes) {
+      const isCandidate = ts.isConstructorDeclaration(node)
+        || ts.isMethodDeclaration(node)
+        || ts.isMethodSignature(node)
+        || ts.isFunctionDeclaration(node);
+      if (!isCandidate) continue;
+      if (this.bodySource.has(node)) continue; // the last signature of a set
+      const key = this.signatureKey(node);
+      if (!key) continue;
+      const first = byKey.get(key);
+      if (first) {
+        collisions.set(node, first);
+        const merged = this.mergedDocs.get(first) || [];
+        merged.push(node);
+        this.mergedDocs.set(first, merged);
+      } else {
+        byKey.set(key, node);
+      }
+    }
+    return collisions;
+  }
+
+  /** The emitted signature of a function-like declaration, as a string. */
+  signatureKey(node) {
+    const savedLossy = this.lossy;
+    const savedNames = this.lastParamNames;
+    let key = null;
+    try {
+      const name = ts.isConstructorDeclaration(node)
+        ? 'constructor'
+        : (node.name ? nameText(node.name) : '');
+      key = `${hasFlag(node, MF.Static) ? 'static ' : ''}${name}(${this.paramList(node)})`;
+    } catch {
+      key = null;
+    }
+    this.lossy = savedLossy;
+    this.lastParamNames = savedNames;
+    return key;
+  }
+
+  /**
+   * Names for destructured parameters, taken from the documentation.
+   *
+   * The emitted signature cannot destructure, so `{ a, b }: Options` becomes
+   * one parameter. Naming it `arg0` while the JSDoc documents it under its
+   * real name leaves it undocumented, which Doxygen reports. When the
+   * documented names that match no other parameter line up one-to-one with
+   * the destructured ones, each takes its documented name.
+   */
+  destructuredParamNames(node, params) {
+    const result = new Map();
+    const patterns = params
+      .map((p, index) => index)
+      .filter((index) => !ts.isIdentifier(params[index].name));
+    if (!patterns.length) return result;
+    const fixed = params
+      .filter((p) => ts.isIdentifier(p.name))
+      .map((p) => nameText(p.name));
+    const unmatched = documentedParamNames(node, this.ctx)
+      .map((name) => sanitizeIdentifier(name, ''))
+      .filter((name) => name && !fixed.includes(name));
+    if (unmatched.length !== patterns.length) return result;
+    patterns.forEach((index, i) => result.set(index, unmatched[i]));
+    return result;
   }
 
   /** Names of the emitted template parameters, for `@tparam` matching. */
@@ -804,13 +887,14 @@ class Translator {
     const parts = [];
     const names = new Set();
     this.lastParamNames = names;
+    const patternNames = this.destructuredParamNames(node, params);
     params.forEach((p, index) => {
       let type = p.type ? this.mapType(p.type, p) : mapInferredType(p, this.ctx, 'any');
       if (!p.type) this.lossy = true;
       if (p.dotDotDotToken && !/^Array</.test(type)) type = `Array< ${type} >`;
       const name = ts.isIdentifier(p.name)
         ? nameText(p.name)
-        : `arg${index}`;
+        : (patternNames.get(index) || `arg${index}`);
       const dflt = p.initializer
         ? literalInitializer(p.initializer)
         : (p.questionToken ? 'undefined' : null);
@@ -929,7 +1013,14 @@ function collectExports(sourceFile) {
   return map;
 }
 
-/** Source text of a declaration without its JSDoc and without its body. */
+/**
+ * Source text of a declaration without its JSDoc and without its body.
+ *
+ * Comments inside the declaration are stripped: an inline object type often
+ * documents its own members (`{ /** max *\/ max?: number }`), and quoting that
+ * verbatim inside a generated comment is both unreadable and -- before the
+ * delimiters are neutralized -- a way to leave the comment open.
+ */
 function declarationSourceText(node) {
   if (!node || !node.getText) return '';
   let text;
@@ -943,7 +1034,7 @@ function declarationSourceText(node) {
     const at = text.lastIndexOf(bodyText);
     if (at > 0) text = text.slice(0, at);
   }
-  text = text.replace(/\s+/g, ' ').trim().replace(/[;,{]+$/, '').trim();
+  text = sourceTextWithoutComments(text).replace(/[;,{]+$/, '').trim();
   if (text.length > 160) text = `${text.slice(0, 157)}...`;
   return text;
 }

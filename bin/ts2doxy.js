@@ -18,6 +18,7 @@ const USAGE = `ts2doxy -- Doxygen input filter for TypeScript/JavaScript
 Usage:
   ts2doxy [options] <file>              translate one file to stdout (filter mode)
   ts2doxy pregen [options] <path...>    translate a whole tree into --out
+                                        (exits non-zero if any file failed)
   ts2doxy report [options] <stats.jsonl>  summarize collected statistics
   ts2doxy --help | --version
 
@@ -31,11 +32,6 @@ Options:
                              instead of just the input file's import closure
       --no-implicit-ctors    do not synthesize constructors for classes that
                              declare none (loses "new Foo()" call edges)
-      --share-declaration-lines
-                             keep every declaration on its exact source line
-                             even when several share one. Doxygen 1.9.8 then
-                             invents call-graph edges between them, so this is
-                             off by default
       --no-virtual           do not mark instance methods virtual
       --no-bodies            emit declarations only (no call-graph bodies)
       --list-unresolved      note unresolved call sites in the output as
@@ -60,7 +56,6 @@ function parseArgs(argv) {
       case '-o': case '--out': opts.out = next(); break;
       case '--whole-program': opts.wholeProgram = true; break;
       case '--no-implicit-ctors': opts.implicitCtors = false; break;
-      case '--share-declaration-lines': opts.shareDeclarationLines = true; break;
       case '--no-virtual': opts.virtualMethods = false; break;
       case '--no-bodies': opts.emitBodies = false; break;
       case '--list-unresolved': opts.listUnresolved = true; break;
