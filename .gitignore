@@ -147,3 +147,8 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# ts2doxy
+doxygen-out/
+doxygen-warnings.log
+*.jsonl

@@ -1,0 +1,21 @@
+{
+  "name": "ts2doxy",
+  "version": "0.1.0",
+  "description": "Doxygen input filter that translates TypeScript/JavaScript into Doxygen-parseable C++ pseudo-code, so Doxygen can produce UML class diagrams, inheritance diagrams and call/caller graphs for TS/JS projects.",
+  "license": "GPL-3.0-or-later",
+  "keywords": ["doxygen", "typescript", "javascript", "documentation", "uml", "call-graph", "input-filter"],
+  "main": "src/index.js",
+  "bin": {
+    "ts2doxy": "bin/ts2doxy.js"
+  },
+  "files": ["bin", "src", "Doxyfile.sample", "README.md"],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node test/run.js"
+  },
+  "dependencies": {
+    "typescript": "^5.9.3"
+  }
+}
