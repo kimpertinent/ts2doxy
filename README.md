@@ -144,22 +144,31 @@ Without it Doxygen has no node to draw `new Foo()` call edges to. Use
 Comments are carried over with their Markdown intact (Doxygen's
 `MARKDOWN_SUPPORT` handles lists, emphasis and fenced code). Characters that
 mean something to Doxygen (`@`, `\`, `<`, `>`, `%`, `&`, `#`) are escaped in
-prose but left verbatim inside `` `code spans` `` and fenced blocks.
+prose, but three kinds of text are left exactly as written: `` `code spans` ``
+and fenced blocks, the inline HTML tags Doxygen supports (`<b>`, `<i>`,
+`<code>`, `<br>`, `<table>`, …) and HTML entities. So `<b>bold</b>` stays
+bold while `Array<T>` in prose stays readable text.
 
 | JSDoc / TSDoc | Doxygen |
 | --- | --- |
 | `@param name desc` | `@param name desc` |
 | `@returns` / `@return` | `@return` (a `@returns` on a `void` function becomes a note, which Doxygen would otherwise reject) |
 | `@throws {Type} desc` / `@exception` | `@throws Type desc` — the type is emitted bare, since Doxygen reads the first token as the exception object |
-| `@deprecated`, `@see`, `@since`, `@author`, `@version`, `@copyright`, `@date`, `@todo`, `@warning`, `@note` | the same command |
+| `@deprecated`, `@since`, `@author`, `@version`, `@copyright`, `@date`, `@todo`, `@warning`, `@note` | the same command |
+| `@see Target` | `@see ns::Target` when the checker resolves it. A URL becomes a "See also" note, since Doxygen expects a reference there. |
 | `@example` | `@par Example` plus `@code{.js} … @endcode`; a Markdown fence inside the example is dropped, because `@code` already delimits the block |
 | `@typeParam T desc` | `@tparam T desc` |
 | `@remarks`, `@description`, `@summary` | an ordinary paragraph |
 | `@defaultValue`, `@internal`, `@alpha`, `@beta`, `@experimental`, `@group`, `@category` | a `@note` |
 | `@type`, `@class`, `@abstract`, `@static`, `@readonly`, `@override`, `@extends`, `@template`, … | dropped — the generated declaration already says it |
 | any other tag | a `@note`, so nothing is lost silently |
-| `{@link X}`, `{@linkcode X}`, `{@linkplain X}` | `@ref ns::X`, with the target resolved through the type checker. `{@link X \| label}` becomes `@ref ns::X "label"`. A target that does not resolve to a translated declaration is written as inline code, and a bare URL as the URL — Doxygen warns about references it cannot resolve. |
+| `{@link X}`, `{@linkcode X}`, `{@linkplain X}` | `@ref ns::X`, with the target resolved through the type checker. `{@link X \| label}` becomes `@ref ns::X "label"`. A target that does not resolve to a translated declaration is written as inline code — Doxygen warns about references it cannot resolve. |
+| `{@link https://… }`, `{@link https://… \| label}` | the bare URL, or a Markdown link `[label](url)` |
 | `@file`, `@fileoverview`, `@module`, `@packageDocumentation` | a `@file` block for the whole file |
+
+The TSDoc separator in `@param name - description` and
+`@typeParam T - description` is punctuation between the name and the
+description, so it is dropped rather than kept as the first word of the text.
 
 `@param` is only emitted for names that appear in the emitted signature.
 Dotted names from destructured parameters (`@param options.width`) have no
@@ -180,11 +189,17 @@ note is prefixed with `%` to stop `AUTOLINK_SUPPORT` turning boilerplate like
 * Doxygen's `Javascript` parser is not used at all; `.js` files go through the
   same C++ pseudo-code path as TypeScript.
 * Declarations are emitted on their original source line, so a documentation
-  block only has the lines above the declaration to live in. When the
-  converted comment needs more room than the original one occupied, it is
-  collapsed onto a single line; that is always valid for Doxygen, but a code
-  example inside it loses its line breaks. Leaving a blank line or a longer
-  comment above the declaration avoids it.
+  block only has the lines the original comment occupied to live in — and the
+  converted comment is often longer, because `@example` gains
+  `@code`/`@endcode` wrappers and because notes about the TypeScript original
+  are added. When it does not fit, the block is tightened in steps: first the
+  blank lines between description, commands and notes go, then the added notes
+  move onto the last comment line, then the `/**` and `*/` delimiters share
+  lines with the text. Description paragraphs, Markdown lists and the line
+  structure of code examples survive all of that. Only if even the tightest
+  form does not fit is the comment collapsed onto one line, which costs a code
+  example its line breaks. Leaving a blank line above the declaration avoids
+  it.
 * `@see` with a name the type checker cannot resolve becomes a note rather
   than a reference, because an unresolvable `\ref` is a Doxygen warning.
 

@@ -34,7 +34,9 @@ class Canvas {
    * Queue one line of code.
    * @param {number} anchor 1-based source line the code should appear on.
    * @param {string} code   single line of C++ pseudo-code.
-   * @param {string[]} [doc] documentation block lines, placed just above.
+   * @param {string[]|{variants:Function}} [doc] the documentation block,
+   *        placed just above: either ready-made lines, or a `Doc` offering
+   *        several renderings to choose from once the free space is known.
    * @param {{shared?: boolean}} [opts] `shared` marks a fragment that is
    *        *expected* to share its line with another one (a constructor
    *        parameter property, a synthesized constructor), so that it is not
@@ -44,7 +46,7 @@ class Canvas {
     this.items.push({
       anchor: Math.max(1, anchor | 0),
       code,
-      doc: doc && doc.length ? doc : [],
+      doc: doc || null,
       shared: !!(opts && opts.shared),
     });
   }
@@ -62,13 +64,13 @@ class Canvas {
     };
 
     for (const item of this.items) {
-      let doc = item.doc;
-      if (doc.length) {
+      const variants = docVariants(item.doc);
+      if (variants.length) {
         const gap = item.anchor - 1 - written();
-        if (doc.length > gap) {
-          // Not enough room for the full block: collapse it to one line.
-          doc = [compactDoc(doc)];
-        }
+        // Take the most faithful rendering that fits in the free space above
+        // the declaration; only collapse to one line when none does.
+        let doc = variants.find((v) => v.length <= gap);
+        if (!doc) doc = [compactDoc(variants[0])];
         if (doc.length <= gap) {
           padTo(item.anchor - 1 - doc.length);
           for (const line of doc) out.push(line);
@@ -87,6 +89,14 @@ class Canvas {
     }
     return out.length ? out.join('\n') + '\n' : '';
   }
+}
+
+/** Candidate renderings of a documentation block, longest first. */
+function docVariants(doc) {
+  if (!doc) return [];
+  if (Array.isArray(doc)) return doc.length ? [doc] : [];
+  if (typeof doc.variants === 'function') return doc.variants();
+  return [];
 }
 
 /**
@@ -114,4 +124,4 @@ function compactDoc(lines) {
   return '/** ' + body + ' */';
 }
 
-module.exports = { Canvas, compactDoc };
+module.exports = { Canvas, compactDoc, docVariants };

@@ -218,6 +218,31 @@ for (const [file, text] of outputs) {
   absent(`${file}: no escaped leftover inline tags`, text, '{\\@link');
 }
 
+// @see: a resolvable name becomes a reference, a URL becomes a note (a URL is
+// not a reference, so Doxygen would reject it as the argument of @see)
+contains('@see resolvable name -> reference', docs, '@see src::docs::betterNormalize');
+contains('@see a class -> reference', docs, '@see src::shapes::Circle');
+contains('@see URL keeps its scheme', docs, '@note %See also: https://example.com/docs');
+absent('@see does not lose the URL scheme', docs, 'See also: ://');
+absent('no reference starts with a bare URL path', docs, '@see ://');
+absent('@see does not keep comment trivia', docs, '@see src::docs::betterNormalize *');
+
+// labelled URL in {@link}
+contains('{@link url | label} -> labelled link', docs,
+  '[the docs](https://example.com)');
+
+// inline HTML Doxygen understands must survive escaping
+contains('<b> kept', docs, '<b>bold</b>');
+contains('<i> kept', docs, '<i>italic</i>');
+contains('<code> kept', docs, '<code>literal</code>');
+contains('<br> kept', docs, 'break<br>after it');
+contains('unknown tag still escaped', docs, 'Array\\<T\\> in prose');
+
+// TSDoc `@param name - description`
+contains('TSDoc hyphen stripped from @param', docs, '@param input the raw label');
+absent('TSDoc hyphen not kept in @param', docs, '@param input - the raw label');
+contains('TSDoc hyphen stripped from @typeParam', docs, '@tparam T the element type');
+
 // @returns on a void function would make Doxygen reject the return value
 contains('@returns on void becomes a note', docs, '@note %Returns: nothing at all');
 absent('@returns on void is not a @return', docs, '@return nothing at all');
@@ -458,6 +483,44 @@ if (!haveDoxygen()) {
   contains('doxygen: @tparam recorded', docsXml, '<parameterlist kind="templateparam">');
   contains('doxygen: @example became a code listing', docsXml, '<programlisting filename=".js">');
   contains('doxygen: markdown list converted', docsXml, '<itemizedlist>');
+  contains('doxygen: labelled URL rendered', docsXml,
+    '<ulink url="https://example.com">the docs</ulink>');
+  contains('doxygen: @see URL kept its scheme', docsXml,
+    '<ulink url="https://example.com/docs">https://example.com/docs</ulink>');
+  contains('doxygen: @see resolved to a reference', docsXml, '<simplesect kind="see">');
+  contains('doxygen: <b> became bold', docsXml, '<bold>bold</bold>');
+  contains('doxygen: <i> became emphasis', docsXml, '<emphasis>italic</emphasis>');
+  contains('doxygen: <code> became computeroutput', docsXml,
+    '<computeroutput>literal</computeroutput>');
+  contains('doxygen: <br> became a line break', docsXml, '<linebreak/>');
+
+  // The line structure of a comment must survive: a declaration is emitted on
+  // its original source line, so its comment has only the lines the original
+  // comment occupied -- but it may not be collapsed while they are enough.
+  const memberXml = (xml, name) => {
+    const re = /<memberdef\b[^>]*>([\s\S]*?)<\/memberdef>/g;
+    let match;
+    while ((match = re.exec(xml)) !== null) {
+      if (new RegExp(`<name>${name}</name>`).test(match[1])) return match[1];
+    }
+    return '';
+  };
+  const countTag = (xml, tag) => (xml.match(new RegExp(`<${tag}[ />]`, 'g')) || []).length;
+  for (const [member, expected] of Object.entries({
+    // `@example` bodies, one <codeline> per source line
+    describeCircle: { codeline: 3, itemizedlist: 1, listitem: 2 },
+    normalize: { codeline: 1, itemizedlist: 1, listitem: 2 },
+  })) {
+    const xml = memberXml(docsXml, member);
+    check(`doxygen: ${member} documentation found`, xml !== '');
+    for (const [tag, want] of Object.entries(expected)) {
+      check(`doxygen: ${member} has ${want} <${tag}> element(s)`,
+        countTag(xml, tag) === want,
+        `found ${countTag(xml, tag)}`);
+    }
+    check(`doxygen: ${member} description has several paragraphs`,
+      countTag(xml, 'para') >= 4, `found ${countTag(xml, 'para')}`);
+  }
   absent('doxygen: generated note boilerplate is not auto-linked', docsXml,
     'kindref="compound">Documented</ref> TypeScript parameters');
 
