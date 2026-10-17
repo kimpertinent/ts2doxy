@@ -33,6 +33,8 @@ Options:
                              declare none (loses "new Foo()" call edges)
       --no-virtual           do not mark instance methods virtual
       --no-bodies            emit declarations only (no call-graph bodies)
+      --list-unresolved      note unresolved call sites in the output as
+                             comments (diagnostic aid)
       --stats <file>         append one JSON line of statistics per file
       --strict               exit non-zero on errors instead of skipping
   -q, --quiet                suppress warnings on stderr
@@ -54,6 +56,7 @@ function parseArgs(argv) {
       case '--no-implicit-ctors': opts.implicitCtors = false; break;
       case '--no-virtual': opts.virtualMethods = false; break;
       case '--no-bodies': opts.emitBodies = false; break;
+      case '--list-unresolved': opts.listUnresolved = true; break;
       case '--stats': opts.stats = next(); break;
       case '--strict': opts.strict = true; break;
       case '-q': case '--quiet': opts.quiet = true; break;

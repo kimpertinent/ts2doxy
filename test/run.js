@@ -47,6 +47,25 @@ function absent(name, haystack, needle) {
 const { createSession } = require('../src/index');
 
 const session = createSession(SRC, { wholeProgram: true });
+
+// A fixture that does not type-check would make the call resolver look weak:
+// an import that does not exist resolves to nothing, which is
+// indistinguishable from a resolver bug in the statistics.
+{
+  const ts = require('typescript');
+  const diagnostics = [
+    ...session.program.getSemanticDiagnostics(),
+    ...session.program.getSyntacticDiagnostics(),
+  ];
+  check('fixtures type-check without diagnostics', diagnostics.length === 0,
+    diagnostics.slice(0, 5).map((d) => {
+      const where = d.file
+        ? `${path.basename(d.file.fileName)}:${d.file.getLineAndCharacterOfPosition(d.start).line + 1}`
+        : '?';
+      return `${where} ${ts.flattenDiagnosticMessageText(d.messageText, ' ')}`;
+    }).join('\n      '));
+}
+
 const outputs = new Map();
 const statsByFile = new Map();
 for (const file of fs.readdirSync(SRC)) {
@@ -86,10 +105,10 @@ contains('static field', shapes, 'static number instances = 0;');
 contains('readonly -> const', shapes, 'const string id;');
 contains('static readonly', shapes, 'static const number PI');
 contains('protected section', shapes, 'protected: number factor = 1;');
-contains('private section', shapes, 'private: virtual number audit();');
+contains('private section', shapes, 'private: virtual number audit()');
 contains('#private -> private', shapes, 'private: number secret = 42;');
-contains('getter', shapes, 'virtual number currentScale();');
-contains('setter', shapes, 'virtual void currentScale(number value);');
+contains('getter', shapes, 'virtual number currentScale()');
+contains('setter', shapes, 'virtual void currentScale(number value)');
 contains('constructor parameter property', shapes, 'public: number width;');
 contains('generic class -> template', shapes, 'template< typename T > class ShapeBag {');
 contains('generic constraint in docs', shapes, 'TypeScript type parameters: `T extends Shape`');
@@ -125,8 +144,8 @@ contains('namespace -> namespace', types, 'namespace units {');
 contains('nested namespace', types, 'namespace imperial {');
 
 // functions
-contains('function declaration', functions, 'string describe();');
-contains('generic function -> template', functions, 'template< typename T > T identity(T value);');
+contains('function declaration', functions, 'string describe()');
+contains('generic function -> template', functions, 'template< typename T > T identity(T value)');
 check('overloads emitted twice',
   (functions.match(/number parse\(/g) || []).length >= 2,
   'expected at least two `parse` declarations');
@@ -148,7 +167,7 @@ contains('re-export noted', functions, 'Exported as named export `helper`');
 contains('overload signature not pure virtual', overloads,
   'public: virtual string format(number value);');
 contains('second overload signature', overloads,
-  'public: virtual string format(boolean value);');
+  'public: virtual string format(boolean value)');
 absent('overload implementation not emitted', overloads, 'number_or_boolean');
 contains('constructor overload signatures', overloads, 'public: Span(number end);');
 contains('parameter property from the implementation', overloads, 'public: number start;');
@@ -166,9 +185,9 @@ contains('inferred type argument from another module is qualified', inference,
 contains('inferred array type', inference, 'public: const Array< string > tags;');
 contains('inferred enum type is qualified', inference, 'public: src::types::Direction heading');
 contains('inferred return type keeps type arguments', inference,
-  'virtual Map< string, src::shapes::Circle > allShapes();');
+  'virtual Map< string, src::shapes::Circle > allShapes()');
 contains('inferred return type of a free function', inference,
-  'src::inference::Store makeStore();');
+  'src::inference::Store makeStore()');
 
 // every class member carries an explicit access specifier: a stale section
 // would silently change the protection of everything after it
@@ -183,8 +202,8 @@ for (const [file, text] of [['shapes.ts', shapes], ['app.ts', app],
 
 // JavaScript
 contains('js class', legacy, 'class Cache {');
-contains('jsdoc types used in signature', legacy, 'virtual boolean put(string key, number value);');
-contains('inferred return type qualified', legacy, 'src::legacy::Cache createCache();');
+contains('jsdoc types used in signature', legacy, 'virtual boolean put(string key, number value)');
+contains('inferred return type qualified', legacy, 'src::legacy::Cache createCache()');
 
 /* --- phase 2: JSDoc / TSDoc conversion --- */
 
@@ -284,6 +303,95 @@ for (const [file, text] of outputs) {
   const offenders = text.split('\n').filter((l) => /@par\s+\S[^\n]*@(note|code|endcode|param|return|throws|tparam|see|deprecated|since)\b/.test(l));
   check(`${file}: no command inside a @par title`, offenders.length === 0,
     offenders.slice(0, 2).join('\n      '));
+}
+
+/* --- phase 3: call graphs --- */
+
+// every function gets a body holding the calls it makes, fully qualified
+contains('constructor call -> ns::X::X()', app, 'src::shapes::Rectangle::Rectangle();');
+contains('method call on a typed member', app, 'src::shapes::ShapeBag::add();');
+contains('static call', app, 'src::shapes::AbstractShape::reset();');
+contains('call into a nested TypeScript namespace', app,
+  'src::types::units::toMillimetres();');
+contains('super() -> the base constructor', app, 'src::app::Report::Report();');
+contains('inherited method through this', app, 'src::app::Report::summary();');
+contains('call to an interface method', app, 'src::shapes::Shape::area();');
+contains('call to a free function in another module', app, 'src::functions::join();');
+contains('call to an overloaded function', app, 'src::functions::parse();');
+contains('call made inside a callback', app, 'src::app::Report::describeValue();');
+contains('recursive call', app, 'src::app::Report::countdown();');
+
+// calls that must not be written out
+absent('call to a function nested in a body is omitted', app, 'src::app::helper();');
+/** The emitted body of a function, as lines, given a fragment of its signature. */
+function bodyOf(text, fragment) {
+  const lines = text.split('\n');
+  const start = lines.findIndex((l) => l.includes(fragment));
+  if (start === -1) return null;
+  const body = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^\}/.test(lines[i])) return body;
+    body.push(lines[i]);
+  }
+  return null;
+}
+const callsIn = (body) => (body || []).filter((l) => /\w(::\w+)+\(\);/.test(l));
+
+{
+  const body = bodyOf(app, 'void dynamic(');
+  check('dynamic dispatch produces an empty body',
+    body !== null && callsIn(body).length === 0,
+    body === null ? 'body not found' : `found: ${callsIn(body).join(' ')}`);
+  const local = bodyOf(app, 'number withLocalFunction(');
+  check('call to a nested function produces an empty body',
+    local !== null && callsIn(local).length === 0,
+    local === null ? 'body not found' : `found: ${callsIn(local).join(' ')}`);
+  const populate = bodyOf(app, 'void populate(');
+  check('populate() emits every constructor call',
+    populate !== null && callsIn(populate).length >= 3,
+    populate === null ? 'body not found' : `found ${callsIn(populate).length}`);
+}
+
+// the implementation of an overload set carries the body; it is attached to
+// the last overload signature (so the documented API stays as written)
+check('overload body attached to the last signature',
+  /virtual string format\(boolean value\) \{[\s\S]{0,80}?src::overloads::Formatter::trim\(\);/.test(overloads),
+  'expected the trim() call under the `format(boolean)` signature');
+absent('overload body not attached to the first signature',
+  overloads.slice(0, overloads.indexOf('format(boolean value)')),
+  'Formatter::trim();');
+
+// statistics
+const appStats = statsByFile.get('app.ts').calls;
+check('calls counted', appStats.total > 10, `total=${appStats.total}`);
+check('calls resolved', appStats.resolved > 10, `resolved=${appStats.resolved}`);
+check('unresolved calls counted', appStats.unresolved >= 1, `unresolved=${appStats.unresolved}`);
+check('indirect calls counted', appStats.indirect >= 1, `indirect=${appStats.indirect}`);
+check('recursion counted', appStats.recursive >= 1, `recursive=${appStats.recursive}`);
+check('unresolved call sampled', (appStats.samples || []).some((t) => t.includes('whatever')),
+  `samples=${JSON.stringify(appStats.samples)}`);
+
+// aggregate report
+{
+  const { aggregate, format } = require('../src/report');
+  const totals = aggregate([...statsByFile.values()]);
+  check('report counts every file', totals.files === statsByFile.size,
+    `${totals.files} vs ${statsByFile.size}`);
+  check('report sums the calls', totals.calls.total > 20, `total=${totals.calls.total}`);
+  const text = format(totals);
+  contains('report prints a resolution rate', text, 'resolution rate');
+  contains('report prints the unresolved samples', text, 'unresolved call sites');
+  check('report rate is plausible',
+    totals.calls.resolved / totals.calls.total > 0.5,
+    `${totals.calls.resolved}/${totals.calls.total}`);
+}
+
+// --no-bodies turns the feature off
+{
+  const bare = createSession(SRC, { wholeProgram: true, emitBodies: false })
+    .translate(path.join(SRC, 'app.ts'));
+  absent('--no-bodies emits no call statements', bare.text, 'src::shapes::Rectangle::Rectangle();');
+  contains('--no-bodies still emits declarations', bare.text, 'virtual void populate();');
 }
 
 // hygiene: nothing that would break Doxygen's parser. No `//` outside a
@@ -389,7 +497,8 @@ if (!haveDoxygen()) {
     'classsrc_1_1app_1_1Report.xml': {
       bag: 'private', populate: 'public', totalMillimetres: 'public',
       resetCounters: 'public', summary: 'public', label: 'public',
-      dynamic: 'public', Report: 'public',
+      dynamic: 'public', viaCallback: 'public', describeValue: 'public',
+      withLocalFunction: 'public', countdown: 'public', Report: 'public',
     },
     'classsrc_1_1app_1_1DetailedReport.xml': {
       DetailedReport: 'public', verbose: 'private', describe: 'public',
@@ -533,6 +642,86 @@ if (!haveDoxygen()) {
   }
   absent('doxygen: generated note boilerplate is not auto-linked', docsXml,
     'kindref="compound">Documented</ref> TypeScript parameters');
+
+  // phase 3: the call relations Doxygen extracted from the emitted bodies
+  // One name can have several <memberdef>s (an overload set), so collect them
+  // all: the body of an overload set sits on its last signature.
+  const memberRefs = (xmlFile) => {
+    const xml = readXml(xmlFile);
+    const out = new Map();
+    const re = /<memberdef\b[^>]*>([\s\S]*?)<\/memberdef>/g;
+    let match;
+    while ((match = re.exec(xml)) !== null) {
+      const block = match[1];
+      const name = /<name>([^<]*)<\/name>/.exec(block);
+      if (!name) continue;
+      const entry = {
+        refs: [...block.matchAll(/<references\b[^>]*>([^<]*)<\/references>/g)].map((m) => m[1]),
+        by: [...block.matchAll(/<referencedby\b[^>]*>([^<]*)<\/referencedby>/g)].map((m) => m[1]),
+      };
+      if (!out.has(name[1])) out.set(name[1], []);
+      out.get(name[1]).push(entry);
+    }
+    return out;
+  };
+  const allRefs = (entries) => (entries || []).flatMap((e) => e.refs);
+  const allBy = (entries) => (entries || []).flatMap((e) => e.by);
+
+  for (const [xmlFile, expected] of Object.entries({
+    'classsrc_1_1app_1_1Report.xml': {
+      populate: ['src::shapes::Circle::Circle', 'src::shapes::Rectangle::Rectangle',
+        'src::shapes::Square::Square'],
+      totalMillimetres: ['src::types::units::toMillimetres'],
+      resetCounters: ['src::shapes::AbstractShape::reset'],
+      summary: ['src::functions::parse', 'src::functions::join', 'src::functions::double_'],
+      viaCallback: ['describeValue'],
+      countdown: ['countdown'],
+    },
+    'classsrc_1_1app_1_1DetailedReport.xml': {
+      DetailedReport: ['src::app::Report::Report', 'src::app::Report::populate'],
+      describe: ['src::app::Report::summary'],
+    },
+    'classsrc_1_1shapes_1_1Square.xml': {
+      Square: ['src::shapes::Rectangle::Rectangle'],
+    },
+    'classsrc_1_1overloads_1_1Formatter.xml': {
+      format: ['trim'],
+    },
+  })) {
+    const members = memberRefs(xmlFile);
+    for (const [member, wanted] of Object.entries(expected)) {
+      const refs = allRefs(members.get(member));
+      check(`doxygen: ${member} has call references`, refs.length > 0,
+        members.has(member) ? 'no references recorded' : 'member not found');
+      for (const target of wanted) {
+        check(`doxygen: ${member} calls ${target}`, refs.includes(target),
+          `references: ${refs.join(', ') || '(none)'}`);
+      }
+    }
+  }
+
+  // caller graphs are the same data read backwards
+  const areaBy = allBy(memberRefs('classsrc_1_1shapes_1_1Shape.xml').get('area'));
+  check('doxygen: Shape::area knows its callers',
+    areaBy.includes('src::app::measure'),
+    `referencedby: ${areaBy.join(', ') || '(none)'}`);
+
+  // calls with no documented target must not have produced an edge
+  const reportMembers = memberRefs('classsrc_1_1app_1_1Report.xml');
+  for (const member of ['withLocalFunction', 'dynamic']) {
+    const refs = allRefs(reportMembers.get(member));
+    check(`doxygen: ${member} produced no call edge`, refs.length === 0,
+      `references: ${refs.join(', ')}`);
+  }
+
+  // the graphs themselves (their file names are content hashes, so count)
+  const svgs = fs.readdirSync(path.join(out, 'html')).filter((f) => f.endsWith('.svg'));
+  check('doxygen: call graphs generated',
+    svgs.filter((f) => f.includes('_cgraph')).length > 10,
+    `${svgs.filter((f) => f.includes('_cgraph')).length} call graphs`);
+  check('doxygen: caller graphs generated',
+    svgs.filter((f) => f.includes('_icgraph')).length > 5,
+    `${svgs.filter((f) => f.includes('_icgraph')).length} caller graphs`);
 
   // diagrams
   for (const graph of [

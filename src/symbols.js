@@ -75,7 +75,10 @@ function qualifiedNameOfDeclaration(decl, ctx) {
   if (!leaf) return null;
 
   const parts = [];
-  let node = ts.isConstructorDeclaration(decl) ? decl.parent.parent : decl.parent;
+  // A constructor is named after its class, which therefore has to appear
+  // twice: `ns::Foo::Foo`. Walking from the class itself (not from its
+  // parent) is what puts it there.
+  let node = decl.parent;
   while (node && !ts.isSourceFile(node)) {
     const name = containerNameOf(node);
     if (name) parts.unshift(name);
