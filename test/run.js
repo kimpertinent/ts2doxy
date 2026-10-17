@@ -64,6 +64,7 @@ const app = outputs.get('app.ts');
 const legacy = outputs.get('legacy.js');
 const overloads = outputs.get('overloads.ts');
 const inference = outputs.get('inference.ts');
+const docs = outputs.get('docs.ts');
 
 // namespaces derived from the file path
 contains('module -> namespace', shapes, 'namespace src { namespace shapes {');
@@ -135,9 +136,11 @@ contains('destructured parameter', functions, 'string place(object arg0)');
 // `double` is a C++ keyword, so the emitted name gets a trailing underscore.
 contains('arrow function -> free function', functions, 'number double_(number value)');
 contains('async noted', functions, '@note `async` function.');
-contains('generator noted', functions, '@note Generator function.');
+// Generated notes get a `%` on their leading word so Doxygen's AUTOLINK_SUPPORT
+// does not turn boilerplate into a link to a same-named class.
+contains('generator noted', functions, '@note %Generator function.');
 contains('named export noted', functions, 'Exported as named export `identity`');
-contains('default export noted', functions, '@note Default export of this module.');
+contains('default export noted', functions, '@note %Default export of this module.');
 contains('re-export noted', functions, 'Exported as named export `helper`');
 
 // overloads: signatures are declarations, never pure virtual, and the
@@ -183,9 +186,81 @@ contains('js class', legacy, 'class Cache {');
 contains('jsdoc types used in signature', legacy, 'virtual boolean put(string key, number value);');
 contains('inferred return type qualified', legacy, 'src::legacy::Cache createCache();');
 
-// hygiene: nothing that would break Doxygen's parser
+/* --- phase 2: JSDoc / TSDoc conversion --- */
+
+contains('@param converted', docs, '@param input the raw label');
+contains('@param for the second parameter', docs, '@param maximum maximum length');
+contains('@returns -> @return', docs, '@return the normalized label');
+contains('@throws keeps the exception type as its first token', docs,
+  '@throws RangeError when `maximum` is negative');
+contains('@deprecated passed through', docs,
+  '@deprecated use @ref src::docs::betterNormalize instead');
+contains('@since passed through', docs, '@since 0.2.0');
+contains('@typeParam -> @tparam', docs, '@tparam T the element type');
+
+// @example -> @code ... @endcode
+contains('@example title', docs, '@par Example');
+contains('@example opens a code block', docs, '@code{.js}');
+contains('@example closes the code block', docs, '@endcode');
+contains('@example drops the markdown fence', docs, "normalize('  Hello  '); // 'Hello'");
+absent('@example fence markers removed', docs, '```');
+
+// {@link ...}
+contains('{@link X} -> resolved @ref', docs, '@ref src::shapes::Circle');
+contains('{@link X.y | label} -> @ref with a label', docs,
+  '@ref src::shapes::Circle::area "the area method"');
+contains('{@link} to a sibling in the same module', docs, '@ref src::docs::betterNormalize');
+contains('unresolvable {@link} becomes plain text', docs, '`NotAThingAnywhere`');
+absent('unresolvable {@link} is not a reference', docs, '@ref NotAThingAnywhere');
+contains('{@link url} becomes the bare URL', docs, 'https://example.com/docs');
 for (const [file, text] of outputs) {
-  absent(`${file}: no line comments emitted`, text, '//');
+  absent(`${file}: no unconverted inline tags`, text, '{@link');
+  absent(`${file}: no escaped leftover inline tags`, text, '{\\@link');
+}
+
+// @returns on a void function would make Doxygen reject the return value
+contains('@returns on void becomes a note', docs, '@note %Returns: nothing at all');
+absent('@returns on void is not a @return', docs, '@return nothing at all');
+
+// parameters that cannot be matched to the emitted signature
+contains('unmatched @param names collected in a note', docs,
+  '@note %Documented TypeScript parameters: `options`: the options;');
+absent('no @param for a destructured member', docs, '@param options.width');
+
+// TSDoc-only tags
+contains('@remarks becomes a paragraph', docs, 'Changing this affects every caller.');
+contains('@defaultValue', docs, '@note %Default value: 42');
+contains('@internal noted', docs, 'Marked `@internal` in the TypeScript source.');
+contains('unknown tag carried over', docs, '@note `@customTag` with a value');
+contains('@group carried over', docs, '@note `@group`: Utilities');
+
+// escaping of Doxygen-special characters in prose
+contains('@ escaped in prose', docs, 'a\\@b');
+contains('% escaped in prose', docs, '100\\%');
+contains('# escaped in prose', docs, 'C\\#');
+contains('angle brackets escaped in prose', docs, 'Array\\<T\\> in prose');
+contains('backtick code left verbatim', docs, '`Array<T>` in code');
+contains('backslash escaped in prose', docs, '\\\\backslash');
+
+// JavaScript JSDoc
+contains('js @param converted', legacy, '@param key entry key');
+contains('js @returns converted', legacy, '@return true when the entry was stored');
+
+// A `@par <title>` takes the rest of the line as its title, so a command
+// joined after it is rejected by Doxygen ("Illegal command ... as part of a
+// title section"). Collapsing a block must not produce that.
+for (const [file, text] of outputs) {
+  const offenders = text.split('\n').filter((l) => /@par\s+\S[^\n]*@(note|code|endcode|param|return|throws|tparam|see|deprecated|since)\b/.test(l));
+  check(`${file}: no command inside a @par title`, offenders.length === 0,
+    offenders.slice(0, 2).join('\n      '));
+}
+
+// hygiene: nothing that would break Doxygen's parser. No `//` outside a
+// comment block: the canvas appends fragments to an existing output line, so a
+// line comment could comment out code. (Inside `@code` blocks `//` is fine.)
+for (const [file, text] of outputs) {
+  const code = text.replace(/\/\*[\s\S]*?\*\//g, '');
+  absent(`${file}: no line comments emitted`, code, '//');
   check(`${file}: braces balanced`,
     (text.match(/\{/g) || []).length === (text.match(/\}/g) || []).length,
     `{ = ${(text.match(/\{/g) || []).length}, } = ${(text.match(/\}/g) || []).length}`);
@@ -360,6 +435,31 @@ if (!haveDoxygen()) {
     'Map&lt; string, number &gt;');
   contains('doxygen: inferred qualified type argument kept', store,
     'src::shapes::Circle');
+
+  // phase 2: the converted documentation as Doxygen resolved it
+  const docsXml = readXml('namespacesrc_1_1docs.xml');
+  contains('doxygen: {@link} resolved to a class reference', docsXml,
+    'refid="classsrc_1_1shapes_1_1Circle" kindref="compound">src::shapes::Circle</ref>');
+  contains('doxygen: labelled {@link} resolved to a member', docsXml,
+    'kindref="member">the area method</ref>');
+  absent('doxygen: unresolvable link did not become a reference', docsXml,
+    '>NotAThingAnywhere</ref>');
+  contains('doxygen: URL became a link', docsXml,
+    '<ulink url="https://example.com/docs">');
+  contains('doxygen: @param recorded', docsXml,
+    '<parametername>input</parametername>');
+  contains('doxygen: @return recorded', docsXml, '<simplesect kind="return">');
+  contains('doxygen: @throws recorded as an exception', docsXml,
+    '<parameterlist kind="exception">');
+  contains('doxygen: @throws exception type recorded', docsXml,
+    '<parametername>RangeError</parametername>');
+  contains('doxygen: @deprecated recorded', docsXml, '<xreftitle>Deprecated</xreftitle>');
+  contains('doxygen: @since recorded', docsXml, '<simplesect kind="since">');
+  contains('doxygen: @tparam recorded', docsXml, '<parameterlist kind="templateparam">');
+  contains('doxygen: @example became a code listing', docsXml, '<programlisting filename=".js">');
+  contains('doxygen: markdown list converted', docsXml, '<itemizedlist>');
+  absent('doxygen: generated note boilerplate is not auto-linked', docsXml,
+    'kindref="compound">Documented</ref> TypeScript parameters');
 
   // diagrams
   for (const graph of [

@@ -139,6 +139,35 @@ Classes that declare no constructor get a synthesized one, documented as such.
 Without it Doxygen has no node to draw `new Foo()` call edges to. Use
 `--no-implicit-ctors` to turn that off.
 
+## JSDoc / TSDoc conversion
+
+Comments are carried over with their Markdown intact (Doxygen's
+`MARKDOWN_SUPPORT` handles lists, emphasis and fenced code). Characters that
+mean something to Doxygen (`@`, `\`, `<`, `>`, `%`, `&`, `#`) are escaped in
+prose but left verbatim inside `` `code spans` `` and fenced blocks.
+
+| JSDoc / TSDoc | Doxygen |
+| --- | --- |
+| `@param name desc` | `@param name desc` |
+| `@returns` / `@return` | `@return` (a `@returns` on a `void` function becomes a note, which Doxygen would otherwise reject) |
+| `@throws {Type} desc` / `@exception` | `@throws Type desc` — the type is emitted bare, since Doxygen reads the first token as the exception object |
+| `@deprecated`, `@see`, `@since`, `@author`, `@version`, `@copyright`, `@date`, `@todo`, `@warning`, `@note` | the same command |
+| `@example` | `@par Example` plus `@code{.js} … @endcode`; a Markdown fence inside the example is dropped, because `@code` already delimits the block |
+| `@typeParam T desc` | `@tparam T desc` |
+| `@remarks`, `@description`, `@summary` | an ordinary paragraph |
+| `@defaultValue`, `@internal`, `@alpha`, `@beta`, `@experimental`, `@group`, `@category` | a `@note` |
+| `@type`, `@class`, `@abstract`, `@static`, `@readonly`, `@override`, `@extends`, `@template`, … | dropped — the generated declaration already says it |
+| any other tag | a `@note`, so nothing is lost silently |
+| `{@link X}`, `{@linkcode X}`, `{@linkplain X}` | `@ref ns::X`, with the target resolved through the type checker. `{@link X \| label}` becomes `@ref ns::X "label"`. A target that does not resolve to a translated declaration is written as inline code, and a bare URL as the URL — Doxygen warns about references it cannot resolve. |
+| `@file`, `@fileoverview`, `@module`, `@packageDocumentation` | a `@file` block for the whole file |
+
+`@param` is only emitted for names that appear in the emitted signature.
+Dotted names from destructured parameters (`@param options.width`) have no
+counterpart there, so they are collected into a note instead of producing a
+Doxygen warning about an unknown argument. The leading word of every generated
+note is prefixed with `%` to stop `AUTOLINK_SUPPORT` turning boilerplate like
+"Default value" into a link to a class of that name.
+
 ## Known limitations
 
 * Class fields that only exist as `this.x = …` assignments in a JavaScript
@@ -150,6 +179,14 @@ Without it Doxygen has no node to draw `new Foo()` call edges to. Use
 * Decorators are not reflected in the output.
 * Doxygen's `Javascript` parser is not used at all; `.js` files go through the
   same C++ pseudo-code path as TypeScript.
+* Declarations are emitted on their original source line, so a documentation
+  block only has the lines above the declaration to live in. When the
+  converted comment needs more room than the original one occupied, it is
+  collapsed onto a single line; that is always valid for Doxygen, but a code
+  example inside it loses its line breaks. Leaving a blank line or a longer
+  comment above the declaration avoids it.
+* `@see` with a name the type checker cannot resolve becomes a note rather
+  than a reference, because an unresolvable `\ref` is a Doxygen warning.
 
 ## Development
 

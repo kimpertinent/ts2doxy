@@ -93,13 +93,21 @@ class Canvas {
  * Collapse a multi-line `/** ... *\/` block into a single line.
  *
  * Doxygen ends a command's argument list at the next command, so
- * `@param a x @param b y` on one line still parses; `@code`/`@endcode` keep
- * working too, they just lose their internal line breaks.
+ * `@param a x @param b y` on one line still parses, and `@code ... @endcode`
+ * stays legal inline -- it only loses its internal line breaks.
+ *
+ * `@par <title>`, however, takes a title that runs to the end of the line, so
+ * everything joined after it would land inside that title and Doxygen rejects
+ * commands there ("Illegal command @note found as part of a title section").
+ * Such a heading is therefore demoted to plain text when collapsing.
  */
 function compactDoc(lines) {
   const body = lines
     .map((l) => l.replace(/^\s*\/\*\*+<?/, '').replace(/\*\/\s*$/, '').replace(/^\s*\*+ ?/, ''))
     .map((l) => l.trim())
+    .filter((l) => l.length)
+    .map((l) => l.replace(/^@par\s+(.*)$/, (match, title) => `${title.replace(/:$/, '')}:`)
+      .replace(/^@par$/, ''))
     .filter((l) => l.length)
     .join(' ')
     .replace(/\*\//g, '*\\/');

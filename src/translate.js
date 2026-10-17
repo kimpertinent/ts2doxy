@@ -181,7 +181,10 @@ class Translator {
     if (exported) notes.push(exported);
     for (const extra of this.typeParameterNotes(node)) notes.push(extra);
 
-    const doc = buildDoc(node, this.ctx, { notes });
+    const doc = buildDoc(node, this.ctx, {
+      notes,
+      typeParamNames: this.typeParamNames(node),
+    });
     const template = this.templatePrefix(node);
     const code = `${template}class ${name}${bases.length ? ` : ${bases.join(', ')}` : ''} {`;
     this.canvas.put(this.anchorOf(node), code, doc.render());
@@ -256,7 +259,11 @@ class Translator {
     const params = this.paramList(node);
     const notes = [];
     if (this.signatureNote(node)) notes.push(this.signatureNote(node));
-    const doc = buildDoc(node, this.ctx, { notes });
+    const doc = buildDoc(node, this.ctx, {
+      notes,
+      paramNames: this.lastParamNames,
+      returnsVoid: true,
+    });
     const body = this.bodyFor(node, `${info.name}`);
     this.canvas.put(
       this.anchorOf(node),
@@ -307,7 +314,12 @@ class Translator {
     if (hasFlag(node, MF.Async)) notes.push('@note `async` function.');
     if (node.asteriskToken) notes.push('@note Generator function.');
     if (node.questionToken) notes.push('@note Optional member.');
-    const doc = buildDoc(node, this.ctx, { notes });
+    const doc = buildDoc(node, this.ctx, {
+      notes,
+      paramNames: this.lastParamNames,
+      typeParamNames: this.typeParamNames(node),
+      returnsVoid: ret === 'void',
+    });
 
     const specifiers = [];
     if (isStatic) specifiers.push('static');
@@ -361,7 +373,12 @@ class Translator {
     const notes = ['@note Declared as a TypeScript property holding a function.'];
     const sig = this.signatureNote(node);
     if (sig) notes.push(sig);
-    const doc = buildDoc(node, this.ctx, { notes });
+    const doc = buildDoc(node, this.ctx, {
+      notes,
+      paramNames: this.lastParamNames,
+      typeParamNames: this.typeParamNames(fn),
+      returnsVoid: ret === 'void',
+    });
     const specifiers = hasFlag(node, MF.Static) ? 'static ' : (this.opts.virtualMethods !== false ? 'virtual ' : '');
     const body = this.bodyFor(fn, name);
     this.canvas.put(
@@ -380,9 +397,14 @@ class Translator {
     const notes = [isGetter ? '@note TypeScript getter (`get`).' : '@note TypeScript setter (`set`).'];
     const sig = this.signatureNote(node);
     if (sig) notes.push(sig);
-    const doc = buildDoc(node, this.ctx, { notes });
+    const specifiersRet = isGetter ? this.returnType(node) : 'void';
+    const doc = buildDoc(node, this.ctx, {
+      notes,
+      paramNames: this.lastParamNames,
+      returnsVoid: specifiersRet === 'void',
+    });
     const specifiers = hasFlag(node, MF.Static) ? 'static ' : (this.opts.virtualMethods !== false ? 'virtual ' : '');
-    const ret = isGetter ? this.returnType(node) : 'void';
+    const ret = specifiersRet;
     const params = isGetter ? '' : this.paramList(node);
     const isAbstract = info.isInterface || hasFlag(node, MF.Abstract);
     let body;
@@ -413,6 +435,8 @@ class Translator {
     const params = this.paramList(node);
     const doc = buildDoc(node, this.ctx, {
       notes: ['@note TypeScript call signature: the type itself is callable.'],
+      paramNames: this.lastParamNames,
+      returnsVoid: ret === 'void',
     });
     this.canvas.put(this.anchorOf(node), `${prefix}${ret} operator()(${params});`, doc.render());
     this.stats.methods++;
@@ -457,7 +481,10 @@ class Translator {
     const exported = this.exportNote(node, name);
     if (exported) notes.push(exported);
     for (const extra of this.typeParameterNotes(node)) notes.push(extra);
-    const doc = buildDoc(node, this.ctx, { notes });
+    const doc = buildDoc(node, this.ctx, {
+      notes,
+      typeParamNames: this.typeParamNames(node),
+    });
     const template = this.templatePrefix(node);
     const code = template
       ? `${template}using ${name} = ${target};`
@@ -479,7 +506,12 @@ class Translator {
     const exported = this.exportNote(node, name);
     if (exported) notes.push(exported);
     for (const extra of this.typeParameterNotes(node)) notes.push(extra);
-    const doc = buildDoc(node, this.ctx, { notes });
+    const doc = buildDoc(node, this.ctx, {
+      notes,
+      paramNames: this.lastParamNames,
+      typeParamNames: this.typeParamNames(node),
+      returnsVoid: ret === 'void',
+    });
     const template = this.templatePrefix(node);
     const hasBody = !!node.body;
     const body = hasBody ? this.bodyFor(node, name) : { open: ';', close: null };
@@ -534,7 +566,12 @@ class Translator {
     if (hasFlag(fn, MF.Async)) notes.push('@note `async` function.');
     const exported = this.exportNote(decl, name);
     if (exported) notes.push(exported);
-    const doc = buildDoc(decl.jsDoc ? decl : decl.parent.parent, this.ctx, { notes });
+    const doc = buildDoc(decl.jsDoc ? decl : decl.parent.parent, this.ctx, {
+      notes,
+      paramNames: this.lastParamNames,
+      typeParamNames: this.typeParamNames(fn),
+      returnsVoid: ret === 'void',
+    });
     const template = this.templatePrefix(fn);
     const body = this.bodyFor(fn, name);
     this.canvas.put(
@@ -591,6 +628,15 @@ class Translator {
     return `template< ${parts.join(', ')} > `;
   }
 
+  /** Names of the emitted template parameters, for `@tparam` matching. */
+  typeParamNames(node) {
+    const names = new Set();
+    for (const tp of node.typeParameters || []) {
+      names.add(sanitizeIdentifier(tp.name.text, 'T'));
+    }
+    return names;
+  }
+
   /** Generic constraints cannot be expressed, so they go into the docs. */
   typeParameterNotes(node) {
     const tps = node.typeParameters;
@@ -626,12 +672,21 @@ class Translator {
     return 'auto';
   }
 
-  /** Render a parameter list. */
+  /**
+   * Render a parameter list, and record the names it used.
+   *
+   * `@param` may only be emitted for a name that really appears in the
+   * signature, so `lastParamNames` is what the documentation builder checks
+   * against. Every call site computes the parameter list before building the
+   * documentation.
+   */
   paramList(node) {
     const params = (node.parameters || []).filter(
       (p) => !(ts.isIdentifier(p.name) && p.name.text === 'this'),
     );
     const parts = [];
+    const names = new Set();
+    this.lastParamNames = names;
     params.forEach((p, index) => {
       let type = p.type ? this.mapType(p.type, p) : mapInferredType(p, this.ctx, 'any');
       if (!p.type) this.lossy = true;
@@ -642,6 +697,7 @@ class Translator {
       const dflt = p.initializer
         ? literalInitializer(p.initializer)
         : (p.questionToken ? 'undefined' : null);
+      names.add(name);
       parts.push(`${type} ${name}${dflt ? ` = ${dflt}` : ''}`);
     });
     return parts.join(', ');

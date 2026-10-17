@@ -50,22 +50,37 @@ class Doc {
     this.notes = [];
   }
 
-  /** Append already-escaped prose. */
+  /**
+   * Append already-escaped prose.
+   *
+   * Entries are split on newlines: the canvas budgets space by counting them,
+   * so one entry has to mean one output line.
+   */
   addText(lines) {
     for (const line of [].concat(lines)) {
       if (line === undefined || line === null) continue;
-      this.text.push(String(line));
+      for (const part of String(line).split('\n')) this.text.push(part);
     }
   }
 
   /** Append a Doxygen command line such as `@param name description`. */
   addCommand(line) {
-    if (line) this.commands.push(String(line));
+    if (!line) return;
+    for (const part of String(line).split('\n')) this.commands.push(part);
   }
 
-  /** Append a `@note`-style remark about the TypeScript source. */
+  /**
+   * Append a `@note`-style remark about the TypeScript source.
+   *
+   * The leading word of these generated remarks is prefixed with `%`, which
+   * stops Doxygen's `AUTOLINK_SUPPORT` from turning boilerplate such as
+   * "Default value" or "Exported" into a link to a class that happens to
+   * carry that name.
+   */
   addNote(line) {
-    if (line) this.notes.push(String(line));
+    if (!line) return;
+    const guarded = String(line).replace(/^(@\w+ +)([A-Z][A-Za-z0-9_]*)/, '$1%$2');
+    for (const part of guarded.split('\n')) this.notes.push(part);
   }
 
   get isEmpty() {
