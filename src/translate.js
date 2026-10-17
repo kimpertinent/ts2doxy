@@ -108,7 +108,7 @@ class Translator {
 
   translate() {
     const segments = namespaceSegmentsForFile(
-      this.sf.fileName, this.ctx.rootDir, this.ctx.namespaceMode,
+      this.sf.fileName, this.ctx.rootDir, this.ctx.namespaceMode, this.ctx.namespaceName,
     );
     this.namespaceSegments = segments;
     this.scopeStack = [];
@@ -791,8 +791,10 @@ class Translator {
    *
    * It has to carry a qualifier for Doxygen 1.18 not to report the function
    * as calling itself; with `--namespace-mode none` there is no namespace to
-   * qualify with, so the global-scope form `::name` is used instead (both
-   * forms verified on 1.9.8 and 1.18.0).
+   * qualify with, so the global-scope form `::name` is used instead. Doxygen
+   * 1.18.0 reads that form as a member of the return type (`void ::f` becomes
+   * `void::f`) and no spelling of a global-scope definition avoids both that
+   * and the self-reference, which is why `--namespace-mode single` exists.
    */
   qualifiedEmitName(name) {
     const qualified = this.qualify(name);

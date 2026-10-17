@@ -1,0 +1,9 @@
+# Doxygen configuration for the `--namespace-mode none` checks: the main
+# fixture configuration, with this directory's sources and the filter run in
+# that mode. Paths are relative to this directory, where the test runs Doxygen.
+@INCLUDE               = ../fixtures/Doxyfile
+PROJECT_NAME           = "ts2doxy fixtures (--namespace-mode none)"
+FILTER_PATTERNS        = *.ts="node ../../bin/ts2doxy.js --strict --namespace-mode none"
+OUTPUT_DIRECTORY       = doxygen-out-none
+WARN_LOGFILE           = doxygen-warnings-none.log
+GENERATE_HTML          = NO

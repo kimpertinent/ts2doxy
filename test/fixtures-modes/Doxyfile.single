@@ -1,0 +1,9 @@
+# Doxygen configuration for the `--namespace-mode single` checks: the main
+# fixture configuration, with this directory's sources and the filter run in
+# that mode. Paths are relative to this directory, where the test runs Doxygen.
+@INCLUDE               = ../fixtures/Doxyfile
+PROJECT_NAME           = "ts2doxy fixtures (--namespace-mode single)"
+FILTER_PATTERNS        = *.ts="node ../../bin/ts2doxy.js --strict --namespace-mode single"
+OUTPUT_DIRECTORY       = doxygen-out-single
+WARN_LOGFILE           = doxygen-warnings-single.log
+GENERATE_HTML          = NO

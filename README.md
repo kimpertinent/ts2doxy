@@ -125,7 +125,8 @@ Options:
 | --- | --- |
 | `-p, --project <tsconfig>` | tsconfig to use. Default: nearest `tsconfig.json`/`jsconfig.json` walking up from the input file. |
 | `-r, --root <dir>` | Directory namespaces are derived from. Default: `rootDir` from the tsconfig, else the tsconfig's directory, else the nearest `package.json` directory. |
-| `-n, --namespace-mode <m>` | `path` (default), `flat` (one namespace per file) or `none`. |
+| `-n, --namespace-mode <m>` | `path` (default), `flat` (one namespace per file), `single` (one namespace for the whole project) or `none` (global scope; broken on Doxygen 1.18, see [Doxygen versions](#doxygen-versions) — use `single` instead). |
+| `--namespace-name <name>` | Namespace for `--namespace-mode single`. Default: the `name` field of the `package.json` next to the tsconfig (a scoped `@scope/pkg` becomes `scope_pkg`), else the tsconfig's directory name. Sanitized to a C++ identifier either way. |
 | `--whole-program` | Build the `Program` from the full tsconfig file list instead of just the input file's import closure. Slower; needed only when symbols are shared through globals rather than imports. |
 | `--no-bodies` | Emit declarations only, without the call-graph bodies. |
 | `--list-unresolved` | Mark unresolved call sites in the output with a comment. |
@@ -388,6 +389,9 @@ Tested against Doxygen **1.9.8** and **1.18.0**. Both produce the same
 documentation from the same input; the differences below are Doxygen's, and
 `ts2doxy` works around the ones it can.
 
+The `single` namespace mode and the `none` findings below were added later
+and verified on Doxygen **1.18.0 only**, not on 1.9.8.
+
 On the 496-file project used for the measurements above, Doxygen 1.9.8 reports
 7187 call references and invents none; 1.18.0 reports 7779 — the same 7187,
 plus 592 parameter-name collisions (see below). Run the test suite against a
@@ -419,6 +423,30 @@ specific build with `DOXYGEN=/path/to/doxygen npm test`.
   declaration. Doxygen has no escape for a backtick and does not decode
   `&#96;` in prose, so a backtick left over after the paired code spans have
   been taken out is replaced by an apostrophe.
+
+### Not worked around: `--namespace-mode none` garbles free functions
+
+The fix above needs a qualifier for the definition. With
+`--namespace-mode none` there is no namespace, so the definition is written
+with the global-scope qualifier, `void ::upsertSession(string id) { … }`.
+Doxygen 1.18.0 reads `void ::upsertSession` as the member `upsertSession` of
+a class `void`. Every free function whose return type ends in a name comes
+out garbled: `void::upsertSession`, `number::countHits`,
+`Promise::upsertAll`. When the return type is a class of the project, the
+function is even filed as a member of that class (`Session::findSession`),
+and on a real project Doxygen has been reported to warn
+`no matching class member found for void::upsertSession`. No spelling of a
+global-scope definition avoids both this and the false self-reference. Tried
+on 1.18.0: `void ::f`, `auto ::f(…) -> void`, `void (::f)(…)`, the return type
+on its own line, a comment or `inline` between the two, `extern void ::f`,
+and the unqualified `void f(…)`.
+
+Use **`--namespace-mode single`** instead. It puts the whole project into one
+namespace (named after the package, see `--namespace-name`), so free
+functions can be qualified the same way as in the other modes, and their
+names, return types and call graphs come out right. The test suite checks
+`single` on a fixture and also asserts the `none` failure on 1.18, so a
+Doxygen release that changes the behaviour is noticed.
 
 ### Not worked around: parameter-name collisions
 
@@ -564,6 +592,9 @@ npm test            # translation checks + Doxygen integration (if doxygen is on
 
 The fixtures in `test/fixtures/src` cover every mapping rule above;
 `test/fixtures/Doxyfile` is a copy of `Doxyfile.sample` wired to the checkout.
+`test/fixtures-modes` holds the free-function fixture for the `single` and
+`none` namespace modes, with one Doxyfile per mode that includes the main one.
+Pick the Doxygen build with `DOXYGEN=/path/to/doxygen npm test`.
 
 ## License
 

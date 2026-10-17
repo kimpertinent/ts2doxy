@@ -26,7 +26,11 @@ Options:
   -p, --project <tsconfig>   tsconfig.json to use (default: nearest one upwards)
   -r, --root <dir>           directory namespaces are derived from
                              (default: rootDir / the tsconfig directory)
-  -n, --namespace-mode <m>   path (default) | flat | none
+  -n, --namespace-mode <m>   path (default) | flat | single | none
+      --namespace-name <name>
+                             namespace for --namespace-mode single (default:
+                             package.json "name" next to the tsconfig, else
+                             the tsconfig directory name)
   -o, --out <dir>            output directory for pregen mode
       --whole-program        build the Program from the full tsconfig file list
                              instead of just the input file's import closure
@@ -53,6 +57,7 @@ function parseArgs(argv) {
       case '-p': case '--project': opts.project = next(); break;
       case '-r': case '--root': opts.root = next(); break;
       case '-n': case '--namespace-mode': opts.namespaceMode = next(); break;
+      case '--namespace-name': opts.namespaceName = next(); break;
       case '-o': case '--out': opts.out = next(); break;
       case '--whole-program': opts.wholeProgram = true; break;
       case '--no-implicit-ctors': opts.implicitCtors = false; break;
@@ -69,6 +74,10 @@ function parseArgs(argv) {
         }
         opts.positional.push(arg);
     }
+  }
+  const { NAMESPACE_MODES } = require('../src/index');
+  if (opts.namespaceMode !== undefined && !NAMESPACE_MODES.includes(opts.namespaceMode)) {
+    throw new Error(`unknown namespace mode: ${opts.namespaceMode} (expected ${NAMESPACE_MODES.join(' | ')})`);
   }
   return opts;
 }

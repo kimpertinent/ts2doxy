@@ -9,8 +9,11 @@
 
 const path = require('path');
 const ts = require('typescript');
-const { createProgram, resolveProject } = require('./project');
+const { createProgram, defaultNamespaceName, resolveProject } = require('./project');
+const { sanitizeIdentifier } = require('./names');
 const { Translator } = require('./translate');
+
+const NAMESPACE_MODES = ['path', 'flat', 'single', 'none'];
 
 const DEFAULT_OPTIONS = {
   implicitCtors: true,
@@ -24,11 +27,18 @@ class Session {
     this.project = project;
     this.checker = program.getTypeChecker();
     this.opts = { ...DEFAULT_OPTIONS, ...opts };
+    const namespaceMode = this.opts.namespaceMode || 'path';
+    if (!NAMESPACE_MODES.includes(namespaceMode)) {
+      throw new Error(`unknown namespace mode: ${namespaceMode} (expected ${NAMESPACE_MODES.join(' | ')})`);
+    }
     this.ctx = {
       program,
       checker: this.checker,
       rootDir: project.rootDir,
-      namespaceMode: this.opts.namespaceMode || 'path',
+      namespaceMode,
+      namespaceName: namespaceMode === 'single'
+        ? sanitizeIdentifier(this.opts.namespaceName || defaultNamespaceName(project), 'project')
+        : null,
       options: this.opts,
     };
   }
@@ -57,7 +67,7 @@ class Session {
 /**
  * Build a session.
  * @param {string} startPath a file or directory inside the project
- * @param {object} opts `{project, root, namespaceMode, wholeProgram, roots}`
+ * @param {object} opts `{project, root, namespaceMode, namespaceName, wholeProgram, roots}`
  */
 function createSession(startPath, opts = {}) {
   const project = resolveProject(startPath, opts);
@@ -81,4 +91,4 @@ function filterFile(fileName, opts = {}) {
   return session.translate(path.resolve(fileName));
 }
 
-module.exports = { DEFAULT_OPTIONS, Session, createSession, filterFile };
+module.exports = { DEFAULT_OPTIONS, NAMESPACE_MODES, Session, createSession, filterFile };

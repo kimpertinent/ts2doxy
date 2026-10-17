@@ -84,7 +84,9 @@ function qualifiedNameOfDeclaration(decl, ctx) {
     if (name) parts.unshift(name);
     node = node.parent;
   }
-  const ns = namespaceSegmentsForFile(sf.fileName, ctx.rootDir, ctx.namespaceMode);
+  const ns = namespaceSegmentsForFile(
+    sf.fileName, ctx.rootDir, ctx.namespaceMode, ctx.namespaceName,
+  );
   return [...ns, ...parts, leaf];
 }
 

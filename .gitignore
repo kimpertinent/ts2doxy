@@ -150,5 +150,6 @@ vite.config.ts.timestamp-*
 
 # ts2doxy
 doxygen-out/
+doxygen-out-*/
 doxygen-warnings.log
 *.jsonl

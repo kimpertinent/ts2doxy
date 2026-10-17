@@ -70,10 +70,12 @@ function stripSourceExtension(p) {
  * `mode` is one of:
  *   - `path` (default): mirror the directory structure.
  *   - `flat`: one namespace per file, segments joined with `_`.
+ *   - `single`: one namespace, `singleName`, for the whole project.
  *   - `none`: no namespace at all (everything lands in the global scope).
  */
-function namespaceSegmentsForFile(fileName, rootDir, mode = 'path') {
+function namespaceSegmentsForFile(fileName, rootDir, mode = 'path', singleName = null) {
   if (mode === 'none') return [];
+  if (mode === 'single') return [singleName || 'project'];
   let rel = path.relative(rootDir, fileName);
   if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
     // Outside the project root (a sibling package, a linked dependency, ...).

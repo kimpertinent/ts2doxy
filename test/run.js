@@ -502,15 +502,17 @@ for (const [file, text] of outputs) {
 }
 
 // line fidelity: every emitted class must sit on its source line
+/** 1-based number of the first line of `text` matching `pattern`, 0 if none. */
+function lineOfText(text, pattern) {
+  return text.split('\n').findIndex((l) => pattern.test(l)) + 1;
+}
+const sourceLineOfText = lineOfText;
+const outputLineOfText = lineOfText;
 function sourceLineOf(file, pattern) {
-  const lines = fs.readFileSync(path.join(SRC, file), 'utf8').split('\n');
-  const index = lines.findIndex((l) => pattern.test(l));
-  return index + 1;
+  return lineOfText(fs.readFileSync(path.join(SRC, file), 'utf8'), pattern);
 }
 function outputLineOf(file, pattern) {
-  const lines = outputs.get(file).split('\n');
-  const index = lines.findIndex((l) => pattern.test(l));
-  return index + 1;
+  return lineOfText(outputs.get(file), pattern);
 }
 for (const [file, patterns] of Object.entries({
   'shapes.ts': [/export abstract class AbstractShape/, /export class Circle/],
@@ -942,6 +944,133 @@ if (!doxVersion) {
   if (process.env.TS2DOXY_TEST_CALLGRAPH) {
     const report = readXml('classsrc_1_1app_1_1Report.xml');
     contains('doxygen: call graph reference recorded', report, '<references ');
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * 3. namespace modes `single` and `none`
+ *
+ * One fixture, `test/fixtures-modes`, of free functions whose return types
+ * all end in an identifier. With no namespace (`none`) the qualified
+ * definition has to be written `void ::f`, which Doxygen 1.18 reads as a
+ * member `f` of a class `void`; `single` puts the whole project into one
+ * namespace so the definition can be qualified with it.
+ * ------------------------------------------------------------------ */
+
+const MODES = path.join(ROOT, 'test', 'fixtures-modes');
+const MODES_SRC = path.join(MODES, 'src', 'sessions.ts');
+
+/** Free functions of the fixture: name -> functions it calls, as written in the TypeScript. */
+const SESSION_CALLS = {
+  findSession: [],
+  upsertSession: ['findSession', 'countHits', 'Session::Session'],
+  countHits: [],
+  hasSession: ['findSession'],
+  upsertAll: ['upsertSession'],
+};
+
+{
+  const translate = (opts) => createSession(MODES_SRC, opts).translate(MODES_SRC).text;
+
+  // the default name: package.json "name" next to the tsconfig, scope dropped
+  const single = translate({ namespaceMode: 'single' });
+  contains('single: namespace named after package.json', single, 'namespace example_session_store {');
+  for (const name of Object.keys(SESSION_CALLS)) {
+    check(`single: ${name} defined with the project namespace`,
+      new RegExp(`^\\S.* example_session_store::${name}\\(`, 'm').test(single),
+      'no qualified definition found');
+  }
+  contains('single: calls qualified with the project namespace', single,
+    'example_session_store::findSession();');
+  check('single: no global-scope definitions', !/^[^*\n]* ::\w+\(/m.test(single),
+    'found a `::name(` definition');
+  check('single: declarations stay on their source lines',
+    outputLineOfText(single, /example_session_store::upsertSession\(string id\) \{/)
+      === sourceLineOfText(fs.readFileSync(MODES_SRC, 'utf8'), /export function upsertSession/));
+
+  // --namespace-name overrides it, and is sanitized like any other name
+  const named = translate({ namespaceMode: 'single', namespaceName: 'my-app' });
+  contains('single: --namespace-name overrides the default', named, 'namespace my_app {');
+  contains('single: --namespace-name used in definitions', named, 'void my_app::upsertSession(');
+
+  // no package.json next to the tsconfig: the tsconfig directory names it
+  const fallback = createSession(path.join(SRC, 'app.ts'), { namespaceMode: 'single' })
+    .translate(path.join(SRC, 'app.ts')).text;
+  contains('single: falls back to the tsconfig directory name', fallback, 'namespace fixtures {');
+  absent('single: one namespace, not one per file', fallback, 'namespace app');
+
+  // none: unchanged, global-scope definitions
+  const none = translate({ namespaceMode: 'none' });
+  absent('none: no namespace emitted', none, 'namespace ');
+  contains('none: global-scope definition form unchanged', none, 'void ::upsertSession(string id) {');
+
+  let threw = null;
+  try { translate({ namespaceMode: 'bogus' }); } catch (err) { threw = err.message; }
+  check('unknown namespace mode is rejected', /unknown namespace mode: bogus/.test(threw || ''), threw);
+}
+
+if (doxVersion) {
+  /** Run Doxygen over the fixture in one mode; returns the XML of its members. */
+  const runMode = (mode) => {
+    const out = path.join(MODES, `doxygen-out-${mode}`);
+    const log = path.join(MODES, `doxygen-warnings-${mode}.log`);
+    fs.rmSync(out, { recursive: true, force: true });
+    fs.rmSync(log, { force: true });
+    execFileSync(DOXYGEN, [`Doxyfile.${mode}`], { cwd: MODES, stdio: 'pipe' });
+    const xmlDir = path.join(out, 'xml');
+    const members = [];
+    for (const file of fs.readdirSync(xmlDir)) {
+      if (!file.endsWith('.xml') || file === 'index.xml' || file === 'Doxyfile.xml') continue;
+      const xml = fs.readFileSync(path.join(xmlDir, file), 'utf8');
+      for (const match of xml.matchAll(/<memberdef\b[^>]*kind="function"[^>]*>([\s\S]*?)<\/memberdef>/g)) {
+        const block = match[1];
+        members.push({
+          file,
+          name: (/<name>([^<]*)<\/name>/.exec(block) || [])[1],
+          definition: (/<definition>([^<]*)<\/definition>/.exec(block) || [])[1],
+          // the definition's line; `line` is the declaration emitted above it
+          bodyStart: Number((/<location\b[^>]*\bbodystart="(\d+)"/.exec(block) || [])[1]),
+          refs: [...block.matchAll(/<references\b[^>]*>([^<]*)<\/references>/g)].map((m) => m[1]),
+        });
+      }
+    }
+    const warnings = fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim() : '';
+    return { members, warnings };
+  };
+
+  const single = runMode('single');
+  check('doxygen single: no warnings', single.warnings === '',
+    single.warnings.split('\n').slice(0, 8).join('\n      '));
+  const source = fs.readFileSync(MODES_SRC, 'utf8');
+  for (const [name, calls] of Object.entries(SESSION_CALLS)) {
+    const found = single.members.filter((m) => m.name === name);
+    check(`doxygen single: ${name} documented once in the project namespace`,
+      found.length === 1 && found[0].file === 'namespaceexample__session__store.xml',
+      `found ${found.map((m) => `${m.file}: ${m.definition}`).join('; ') || 'nothing'}`);
+    if (found.length !== 1) continue;
+    const [member] = found;
+    check(`doxygen single: ${name} has its own return type`,
+      new RegExp(`^\\S.* example_session_store::${name}$`).test(member.definition),
+      `definition: ${member.definition}`);
+    const want = sourceLineOfText(source, new RegExp(`export (async function|function|const) ${name}\\b`));
+    check(`doxygen single: ${name} defined at sessions.ts:${want}`, member.bodyStart === want,
+      `reported line ${member.bodyStart}`);
+    // exactly the calls written in the source: none missing, none invented,
+    // and in particular no false self-reference
+    const refs = member.refs.map((r) => r.replace(/^example_session_store::/, ''));
+    check(`doxygen single: ${name} calls exactly ${calls.join(', ') || 'nothing'}`,
+      refs.length === calls.length && calls.every((c) => refs.includes(c)),
+      `references: ${refs.join(', ') || '(none)'}`);
+  }
+
+  // The known 1.18 failure of `none`, asserted so that the README's statement
+  // is noticed when a Doxygen release changes it.
+  if (/^1\.18\./.test(doxVersion)) {
+    const none = runMode('none');
+    const garbled = none.members.find((m) => m.definition === 'void::upsertSession');
+    check('doxygen none: 1.18 garbles the definition to void::upsertSession, as the README says',
+      !!garbled,
+      `definitions: ${none.members.map((m) => m.definition).join(', ')}`);
   }
 }
 

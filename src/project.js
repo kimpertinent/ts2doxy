@@ -11,6 +11,7 @@
 const fs = require('fs');
 const path = require('path');
 const ts = require('typescript');
+const { sanitizeIdentifier } = require('./names');
 
 /** Compiler options that are forced regardless of what the tsconfig says. */
 const FORCED_OPTIONS = {
@@ -122,6 +123,26 @@ function resolveProject(startPath, opts = {}) {
 }
 
 /**
+ * The namespace `--namespace-mode single` puts everything into: the `name` of
+ * the package.json next to the project's tsconfig (a scoped `@scope/pkg`
+ * becomes `scope_pkg`), else the name of the tsconfig's directory. Only that
+ * one directory is looked at, so a package.json further up -- a monorepo root,
+ * an unrelated parent -- cannot name the project.
+ */
+function defaultNamespaceName(project) {
+  const pkgPath = path.join(project.configDir, 'package.json');
+  let name = null;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    if (typeof pkg.name === 'string' && pkg.name.trim()) name = pkg.name.trim();
+  } catch {
+    // no package.json, or not valid JSON: fall back to the directory name
+  }
+  if (!name) name = path.basename(path.resolve(project.configDir));
+  return sanitizeIdentifier(name.replace(/^@/, ''), 'project');
+}
+
+/**
  * Build a Program.
  *
  * `roots` decides the strategy:
@@ -142,6 +163,7 @@ function createProgram(roots, options, host) {
 module.exports = {
   FORCED_OPTIONS,
   createProgram,
+  defaultNamespaceName,
   fallbackOptions,
   findConfigFile,
   findUp,
