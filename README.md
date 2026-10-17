@@ -71,8 +71,9 @@ FILTER_SOURCE_FILES = NO
 ### On the command line
 
 ```sh
-ts2doxy src/thing.ts            # print the translation of one file
+ts2doxy src/thing.ts                 # print the translation of one file
 ts2doxy --stats stats.jsonl src/thing.ts
+ts2doxy report stats.jsonl           # aggregate the collected statistics
 ts2doxy --help
 ```
 
@@ -84,6 +85,8 @@ Options:
 | `-r, --root <dir>` | Directory namespaces are derived from. Default: `rootDir` from the tsconfig, else the tsconfig's directory, else the nearest `package.json` directory. |
 | `-n, --namespace-mode <m>` | `path` (default), `flat` (one namespace per file) or `none`. |
 | `--whole-program` | Build the `Program` from the full tsconfig file list instead of just the input file's import closure. Slower; needed only when symbols are shared through globals rather than imports. |
+| `--no-bodies` | Emit declarations only, without the call-graph bodies. |
+| `--list-unresolved` | Mark unresolved call sites in the output with a comment. |
 | `--no-implicit-ctors` | Do not synthesize constructors for classes that declare none. |
 | `--no-virtual` | Do not mark instance methods `virtual`. |
 | `--strict` | Exit non-zero on errors. By default a file that fails to translate is skipped with a warning on stderr, so one bad file cannot abort a documentation build. |
@@ -139,6 +142,60 @@ Classes that declare no constructor get a synthesized one, documented as such.
 Without it Doxygen has no node to draw `new Foo()` call edges to. Use
 `--no-implicit-ctors` to turn that off.
 
+## Call graphs
+
+Doxygen builds call and caller graphs by parsing function *bodies*, so every
+function is emitted with a body containing nothing but the calls it makes,
+each written as a fully qualified call statement on the line the original call
+occupies:
+
+```cpp
+virtual void populate() {
+src::shapes::ShapeBag::add(); src::shapes::Rectangle::Rectangle();
+src::shapes::ShapeBag::add(); src::shapes::Square::Square();
+}
+```
+
+Targets are resolved with the type checker (`getResolvedSignature`, then the
+symbol of the callee expression, following import and export aliases), which
+is what makes the edges cross file boundaries. Constructor calls
+(`new X()` → `ns::X::X()`), `super()` calls, static calls, calls through typed
+object members, calls into TypeScript namespaces and calls made inside inline
+callbacks are all covered.
+
+Every call ends up in one of five buckets:
+
+| bucket | meaning |
+| --- | --- |
+| resolved | the target is a declaration we translate — emitted as a call statement |
+| external | the target is in `lib.d.ts` or `node_modules` (`console.log`, `Array#push`) — omitted, because Doxygen has no node for it |
+| indirect | the target resolved, but to something that is not a documented entity: a function nested in another body, or a parameter or local variable holding a callback — omitted, the name would have nothing to bind to |
+| unresolved | no declaration found: untyped JavaScript, `obj[name]()`, a callback the checker cannot follow — omitted |
+| recursive | counted inside *resolved*, reported separately because a self-call says nothing about resolution quality |
+
+For an overload set, the implementation signature holds the body while only
+the overload signatures are callable. The extracted body is attached to the
+**last overload signature**, which keeps the documented API exactly as written
+and still yields the call edges.
+
+### Measuring the resolution rate
+
+Add `--stats <file>` to the filter command, run Doxygen, then aggregate:
+
+```sh
+rm -f ts2doxy-stats.jsonl
+# FILTER_PATTERNS = *.ts="node ./node_modules/ts2doxy/bin/ts2doxy.js --stats ts2doxy-stats.jsonl"
+doxygen Doxyfile
+ts2doxy report ts2doxy-stats.jsonl
+```
+
+The report prints the declaration counts, how many declarations drifted off
+their source line, the five call buckets with percentages, the resolution
+rate, a sample of unresolved call sites and the files with the most of them.
+`--list-unresolved` additionally marks each unresolved call site in the
+generated pseudo-code with a comment, which is useful when chasing a missing
+edge.
+
 ## JSDoc / TSDoc conversion
 
 Comments are carried over with their Markdown intact (Doxygen's
@@ -184,7 +241,9 @@ note is prefixed with `%` to stop `AUTOLINK_SUPPORT` turning boilerplate like
   declarations and JSDoc-typed constructor parameters are).
 * CommonJS `module.exports = …` is not recognised as an export.
 * Statements at module level (code outside any function) do not become call
-  graph edges.
+  graph edges, because there is no function to attribute them to.
+* Call statements are emitted without arguments, so a call to an overloaded
+  function links to one of its overloads rather than the matching one.
 * Decorators are not reflected in the output.
 * Doxygen's `Javascript` parser is not used at all; `.js` files go through the
   same C++ pseudo-code path as TypeScript.

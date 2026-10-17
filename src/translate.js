@@ -16,6 +16,7 @@
 
 const ts = require('typescript');
 const { Canvas } = require('./canvas');
+const { extractCalls } = require('./calls');
 const { escapeInlineCode } = require('./doc');
 const { buildDoc, findFileComment } = require('./jsdoc');
 const { namespaceSegmentsForFile, sanitizeIdentifier } = require('./names');
@@ -48,13 +49,23 @@ class Translator {
       fields: 0,
       variables: 0,
       namespaces: 0,
-      calls: { total: 0, resolved: 0, external: 0, unresolved: 0, samples: [] },
+      calls: {
+        total: 0,
+        resolved: 0,
+        external: 0,
+        indirect: 0,
+        unresolved: 0,
+        recursive: 0,
+        samples: [],
+      },
     };
     this.exports = collectExports(sourceFile);
     this.lineCount = sourceFile.getLineStarts().length;
     // Keep the module overview out of the first declaration's documentation.
     this.fileComment = findFileComment(sourceFile);
     this.ctx.skipJsDoc = new Set(this.fileComment ? [this.fileComment] : []);
+    // Overload signature -> the implementation whose body it borrows.
+    this.bodySource = new Map();
   }
 
   /* ------------------------------------------------------------------ *
@@ -90,6 +101,7 @@ class Translator {
       this.sf.fileName, this.ctx.rootDir, this.ctx.namespaceMode,
     );
     this.namespaceSegments = segments;
+    this.scopeStack = [];
     if (segments.length) {
       this.canvas.put(1, segments.map((s) => `namespace ${s} {`).join(' '));
       this.stats.namespaces = segments.length;
@@ -135,7 +147,10 @@ class Translator {
    * ------------------------------------------------------------------ */
 
   emitStatements(statements) {
-    const implementations = overloadImplementations(statements);
+    const { implementations, bodySource } = collectOverloads(statements);
+    for (const [signature, implementation] of bodySource) {
+      this.bodySource.set(signature, implementation);
+    }
     for (const st of statements) {
       if (implementations.has(st)) continue; // overload implementation signature
       this.emitStatement(st);
@@ -189,7 +204,9 @@ class Translator {
     const code = `${template}class ${name}${bases.length ? ` : ${bases.join(', ')}` : ''} {`;
     this.canvas.put(this.anchorOf(node), code, doc);
 
-    this.emitMembers(node, { name, isInterface, abstract });
+    this.emitMembers(node, {
+      name, isInterface, abstract, qualified: this.qualify(name),
+    });
     this.canvas.put(this.endLineOf(node), '};', null, { shared: true });
 
     this.ctx.currentTypeName = previousType;
@@ -208,8 +225,12 @@ class Translator {
     const members = node.members || [];
     // In an overload set TypeScript's implementation signature is not part of
     // the API -- only the overload signatures are callable -- so it is not
-    // emitted as a declaration of its own.
-    const implementations = overloadImplementations(members);
+    // emitted as a declaration of its own; its body goes to the last
+    // signature (see collectOverloads).
+    const { implementations, bodySource } = collectOverloads(members);
+    for (const [signature, implementation] of bodySource) {
+      this.bodySource.set(signature, implementation);
+    }
     let sawConstructor = false;
 
     for (const member of members) {
@@ -264,7 +285,8 @@ class Translator {
       paramNames: this.lastParamNames,
       returnsVoid: true,
     });
-    const body = this.bodyFor(node, `${info.name}`);
+    const bodyNode = this.bodySource.get(node) || node;
+    const body = this.bodyFor(bodyNode, `${info.qualified}::${info.name}`);
     this.canvas.put(
       this.anchorOf(node),
       `${prefix}${info.name}(${params})${body.open}`,
@@ -325,17 +347,17 @@ class Translator {
     if (isStatic) specifiers.push('static');
     else if (this.opts.virtualMethods !== false) specifiers.push('virtual');
     const template = this.templatePrefix(node);
+    const bodyNode = this.bodySource.get(node) || node;
     let body;
-    if (isAbstract) body = { open: ' = 0;', close: null };
-    else if (node.body) body = this.bodyFor(node, name);
-    else body = { open: ';', close: null };
+    if (isAbstract) body = { open: ' = 0;', calls: null };
+    else body = this.bodyFor(bodyNode, `${info.qualified}::${name}`);
 
     this.canvas.put(
       this.anchorOf(node),
       `${prefix}${template}${specifiers.join(' ')}${specifiers.length ? ' ' : ''}${ret} ${name}(${params})${body.open}`,
       doc,
     );
-    if (!isAbstract && node.body) this.closeBody(node, body);
+    if (!isAbstract) this.closeBody(node, body);
     this.stats.methods++;
   }
 
@@ -380,7 +402,7 @@ class Translator {
       returnsVoid: ret === 'void',
     });
     const specifiers = hasFlag(node, MF.Static) ? 'static ' : (this.opts.virtualMethods !== false ? 'virtual ' : '');
-    const body = this.bodyFor(fn, name);
+    const body = this.bodyFor(fn, `${info.qualified}::${name}`);
     this.canvas.put(
       this.anchorOf(node),
       `${prefix}${specifiers}${ret} ${name}(${params})${body.open}`,
@@ -408,15 +430,14 @@ class Translator {
     const params = isGetter ? '' : this.paramList(node);
     const isAbstract = info.isInterface || hasFlag(node, MF.Abstract);
     let body;
-    if (isAbstract) body = { open: ' = 0;', close: null };
-    else if (node.body) body = this.bodyFor(node, name);
-    else body = { open: ';', close: null };
+    if (isAbstract) body = { open: ' = 0;', calls: null };
+    else body = this.bodyFor(node, `${info.qualified}::${name}`);
     this.canvas.put(
       this.anchorOf(node),
       `${prefix}${specifiers}${ret} ${name}(${params})${body.open}`,
       doc,
     );
-    if (!isAbstract && node.body) this.closeBody(node, body);
+    if (!isAbstract) this.closeBody(node, body);
     this.stats.methods++;
   }
 
@@ -513,14 +534,14 @@ class Translator {
       returnsVoid: ret === 'void',
     });
     const template = this.templatePrefix(node);
-    const hasBody = !!node.body;
-    const body = hasBody ? this.bodyFor(node, name) : { open: ';', close: null };
+    const bodyNode = this.bodySource.get(node) || node;
+    const body = this.bodyFor(bodyNode, this.qualify(name));
     this.canvas.put(
       this.anchorOf(node),
       `${template}${ret} ${name}(${params})${body.open}`,
       doc,
     );
-    if (hasBody) this.closeBody(node, body);
+    this.closeBody(node, body);
     this.stats.functions++;
   }
 
@@ -573,7 +594,7 @@ class Translator {
       returnsVoid: ret === 'void',
     });
     const template = this.templatePrefix(fn);
-    const body = this.bodyFor(fn, name);
+    const body = this.bodyFor(fn, this.qualify(name));
     this.canvas.put(
       this.anchorOf(decl),
       `${template}${ret} ${name}(${params})${body.open}`,
@@ -591,11 +612,13 @@ class Translator {
         : '@note TypeScript `namespace` declaration.'],
     });
     this.canvas.put(this.anchorOf(node), `namespace ${name} {`, doc);
+    this.scopeStack.push(name);
     if (node.body && ts.isModuleBlock(node.body)) {
       this.emitStatements(node.body.statements);
     } else if (node.body && ts.isModuleDeclaration(node.body)) {
       this.emitModule(node.body);
     }
+    this.scopeStack.pop();
     this.canvas.put(this.endLineOf(node), '}', null, { shared: true });
     this.stats.namespaces++;
   }
@@ -604,12 +627,56 @@ class Translator {
    * shared pieces
    * ------------------------------------------------------------------ */
 
-  /** Phase 3 fills function bodies with the calls they make. */
-  bodyFor() {
-    return { open: ';', close: null };
+  /**
+   * Open a function body holding the calls it makes, which is what Doxygen
+   * reads to build call and caller graphs.
+   *
+   * @param node the function-like node to take the body from (for an overload
+   *        set that is the implementation, not the signature being emitted)
+   * @param name qualified name of the function being emitted, so self-calls
+   *        can be counted separately
+   */
+  bodyFor(node, name) {
+    if (this.opts.emitBodies === false || !node || !node.body) {
+      return { open: ';', calls: null, node: null };
+    }
+    const ctx = { ...this.ctx, currentFunctionName: name };
+    const { calls, stats, unresolved } = extractCalls(node, ctx, {
+      listUnresolved: this.opts.listUnresolved,
+    });
+    const totals = this.stats.calls;
+    for (const key of ['total', 'resolved', 'external', 'indirect', 'unresolved', 'recursive']) {
+      totals[key] += stats[key];
+    }
+    for (const item of unresolved) {
+      if (totals.samples.length < 20) totals.samples.push(item.text);
+    }
+    return { open: ' {', calls, node, unresolved };
   }
 
-  closeBody() {}
+  /** Emit the call statements and the closing brace of a body. */
+  closeBody(node, body) {
+    if (!body || !body.calls) return;
+    for (const call of body.calls) {
+      this.canvas.put(call.line, `${call.name}();`, null, { shared: true });
+    }
+    if (this.opts.listUnresolved) {
+      for (const item of body.unresolved || []) {
+        this.canvas.put(
+          item.line,
+          `/* ts2doxy: unresolved call ${item.text.replace(/\*\//g, '* /')} */`,
+          null,
+          { shared: true },
+        );
+      }
+    }
+    this.canvas.put(this.endLineOf(body.node), '}', null, { shared: true });
+  }
+
+  /** Qualified name of something declared in the current scope. */
+  qualify(name) {
+    return [...(this.namespaceSegments || []), ...this.scopeStack, name].join('::');
+  }
 
   anonymousName(node) {
     const base = require('path').basename(this.sf.fileName).replace(/\..*$/, '');
@@ -735,13 +802,20 @@ class Translator {
  * -------------------------------------------------------------------- */
 
 /**
- * The implementation signatures of overload sets among `nodes`.
+ * Analyse the overload sets among `nodes`.
  *
  * TypeScript writes overloads as several body-less signatures followed by one
  * implementation whose parameter types are the union of all of them. Only the
- * signatures are callable, so only they are documented.
+ * signatures are callable, so only they are documented -- but the
+ * implementation holds the body, and therefore every call the function makes.
+ * Its body is attached to the **last** overload signature, which keeps the
+ * documented API exactly as written while preserving the call-graph edges.
+ *
+ * @returns `{implementations, bodySource}`: the implementation signatures to
+ *          skip, and for the last signature of each set the node to take the
+ *          body from.
  */
-function overloadImplementations(nodes) {
+function collectOverloads(nodes) {
   const groups = new Map();
   for (const node of nodes) {
     const isCandidate = ts.isConstructorDeclaration(node)
@@ -755,14 +829,17 @@ function overloadImplementations(nodes) {
     groups.get(key).push(node);
   }
   const implementations = new Set();
+  const bodySource = new Map();
   for (const group of groups.values()) {
     if (group.length < 2) continue;
     const withBody = group.filter((n) => n.body);
-    if (withBody.length === 1 && group.length > withBody.length) {
+    const signatures = group.filter((n) => !n.body);
+    if (withBody.length === 1 && signatures.length) {
       implementations.add(withBody[0]);
+      bodySource.set(signatures[signatures.length - 1], withBody[0]);
     }
   }
-  return implementations;
+  return { implementations, bodySource };
 }
 
 function hasFlag(node, flag) {
@@ -870,8 +947,8 @@ function isFaithful(mapped, source) {
 module.exports = {
   Translator,
   collectExports,
+  collectOverloads,
   declarationSourceText,
   isFaithful,
   literalInitializer,
-  overloadImplementations,
 };

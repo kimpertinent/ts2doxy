@@ -11,7 +11,7 @@ export class Formatter {
   /** Format a date. */
   format(value: boolean): string;
   format(value: number | boolean): string {
-    return String(value);
+    return this.trim(String(value));
   }
 
   /** An ordinary method, for contrast. */
