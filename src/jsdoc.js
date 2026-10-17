@@ -15,9 +15,12 @@
  */
 
 const ts = require('typescript');
-const { Doc, escapeInlineCode, escapeText } = require('./doc');
+const { Doc, escapeInlineCode, escapeText, neutralizeCommentDelimiters } = require('./doc');
 const { sanitizeIdentifier } = require('./names');
 const { qualifiedNameOfSymbol } = require('./symbols');
+
+/** Tags that may appear only once per argument, even across merged comments. */
+const DEDUPED_TAGS = new Set(['param', 'arg', 'argument', 'typeParam', 'returns', 'return']);
 
 /** Tags that mark a comment as describing the file rather than a declaration. */
 const FILE_TAGS = new Set(['file', 'fileoverview', 'overview', 'module', 'packageDocumentation']);
@@ -151,9 +154,12 @@ function renderLink(part, ctx) {
   let label = String(part.text || '').trim().replace(/^\|\s*/, '').trim();
   const target = resolveLinkTarget(nameNode, ctx);
   if (target) {
-    return label && label !== written
-      ? `@ref ${target} "${label.replace(/"/g, "'")}"`
-      : `@ref ${target}`;
+    // The label is always written out. Doxygen reads the argument of `@ref`
+    // up to the next space, so `{@link decrement}: builds` would otherwise
+    // become `@ref ns::decrement: builds` and the reference would not
+    // resolve -- the punctuation that follows a link is part of the sentence.
+    const text = (label || written || target).replace(/"/g, "'");
+    return `@ref ${target} "${text}"`;
   }
   if (!written) {
     // `{@link https://example.com}`: Doxygen auto-links bare URLs.
@@ -213,6 +219,29 @@ function rawCommentText(comment) {
   }).join('');
 }
 
+/**
+ * Top-level `@param` names in a declaration's JSDoc, in order and deduplicated.
+ *
+ * Used to give a destructured parameter the name its documentation uses: the
+ * emitted signature cannot destructure, so `{ maxAliasLength }: Driver`
+ * becomes one parameter, and calling it `arg0` while the JSDoc documents
+ * `@param driver` leaves it undocumented as far as Doxygen is concerned.
+ */
+function documentedParamNames(node, ctx) {
+  const names = [];
+  for (const block of jsDocNodes(node, ctx)) {
+    for (const tag of block.tags || []) {
+      const tagName = tag.tagName ? tag.tagName.text : '';
+      if (tagName !== 'param' && tagName !== 'arg' && tagName !== 'argument') continue;
+      const written = tag.name && tag.name.getText ? tag.name.getText() : '';
+      const bare = written.replace(/^\.\.\./, '').replace(/^\[/, '').replace(/\]$/, '');
+      if (!bare || bare.includes('.')) continue; // a member of a destructured object
+      if (!names.includes(bare)) names.push(bare);
+    }
+  }
+  return names;
+}
+
 /** The type written in a JSDoc type expression, e.g. the `number` of `{number}`. */
 function typeExpressionText(tag) {
   const expr = tag.typeExpression;
@@ -254,7 +283,7 @@ function renderExample(tag) {
   const out = [title ? `@par Example: ${escapeText(title)}` : '@par Example'];
   if (body.length) {
     out.push('@code{.js}');
-    for (const line of body) out.push(line.replace(/\*\//g, '* /'));
+    for (const line of body) out.push(neutralizeCommentDelimiters(line));
     out.push('@endcode');
   }
   return out;
@@ -358,13 +387,28 @@ function buildDoc(node, ctx, info = {}) {
   const typeParamNames = info.typeParamNames || new Set();
   const undocumentable = [];
 
-  for (const block of jsDocNodes(node, ctx)) {
+  // `mergeFrom` carries the comments of declarations that collapsed onto this
+  // one (overloads whose emitted signatures are identical), so their
+  // documentation is not lost.
+  const blocks = [
+    ...jsDocNodes(node, ctx),
+    ...(info.mergeFrom || []).flatMap((other) => jsDocNodes(other, ctx)),
+  ];
+  const seenTags = new Set();
+  for (const block of blocks) {
     const lines = renderComment(block.comment, ctx);
     if (lines.length) doc.addText(lines);
 
     for (const tag of block.tags || []) {
       const name = tag.tagName ? tag.tagName.text : '';
       const body = renderCommentInline(tag.comment, ctx);
+      // A merged overload documents the same parameters again; Doxygen
+      // rejects a second `@param` for one argument.
+      if (DEDUPED_TAGS.has(name)) {
+        const key = `${name}:${tag.name && tag.name.getText ? tag.name.getText() : ''}`;
+        if (seenTags.has(key)) continue;
+        seenTags.add(key);
+      }
 
       switch (name) {
         case 'param':
@@ -496,6 +540,7 @@ function tagSourceText(tag) {
 
 module.exports = {
   FILE_TAGS,
+  documentedParamNames,
   PASSTHROUGH_TAGS,
   REDUNDANT_TAGS,
   buildDoc,

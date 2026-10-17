@@ -35,9 +35,22 @@ const HTML_MARKUP = `</?(?:${HTML_TAGS.join('|')})(?:\\s[^<>]*)?/?>`
  */
 function escapeText(text) {
   if (!text) return '';
-  const parts = String(text).split(/(```[\s\S]*?```|`[^`\n]*`)/g);
+  // A markdown code span may span lines, and Doxygen renders it as one; the
+  // pattern has to match that or the backticks would be escaped apart.
+  const parts = String(text).split(/(```[\s\S]*?```|`[^`]*`)/g);
   return parts
-    .map((part, i) => (i % 2 === 1 ? part : escapeProse(part)))
+    .map((part, i) => {
+      if (i % 2 === 0) return escapeProse(part);
+      // Fenced blocks are left as they are: Doxygen turns them into a code
+      // block. A single-backtick span becomes `<tt>` instead, because
+      // Doxygen's own handling of those is fragile -- an apostrophe in the
+      // span makes the opening backtick pair with it as a TeX-style quote,
+      // and some contents (`${a}.${b}`) leave the span unterminated, which
+      // reports as a stray `</tt>`. `<tt>` renders identically and parses
+      // unambiguously.
+      if (part.startsWith('```')) return part;
+      return escapeInlineCode(part.replace(/^`|`$/g, ''));
+    })
     .join('');
 }
 
@@ -49,9 +62,8 @@ function escapeProse(text) {
 }
 
 function escapePlain(text) {
-  return text
+  return neutralizeCommentDelimiters(text)
     .replace(/\\/g, '\\\\')
-    .replace(/\*\//g, '*\\/')
     .replace(/@/g, '\\@')
     .replace(/</g, '\\<')
     .replace(/>/g, '\\>')
@@ -60,9 +72,36 @@ function escapePlain(text) {
     .replace(/#/g, '\\#');
 }
 
-/** Escape a fragment that will be shown as inline code (`\c foo` style). */
+/**
+ * Neutralize comment delimiters in text that goes inside a generated comment.
+ *
+ * `/*` is the dangerous one: Doxygen's C comment scanner counts nested
+ * comments, so a `/**` inside our `/** ... *\/` block -- which happens as soon
+ * as a documented TypeScript type carries its own JSDoc, e.g.
+ * `readonly pool?: { /** max *\/ max?: number }` -- leaves the comment open
+ * and swallows the rest of the file. Separating the two characters with a
+ * space is the only form Doxygen renders verbatim: `*\\/` and `/\\*` both
+ * print the backslash.
+ */
+function neutralizeCommentDelimiters(text) {
+  return String(text == null ? '' : text)
+    .replace(/\/\*/g, '/ *')
+    .replace(/\*\//g, '* /');
+}
+
+/**
+ * Render a fragment as inline code inside a generated comment.
+ *
+ * Markdown backticks cannot be used for this. Doxygen also supports the
+ * TeX-style quotation `` `quoted' ``, so the opening backtick pairs with the
+ * first apostrophe in the text instead of with the closing backtick -- and
+ * embedded TypeScript is full of apostrophes. The span then falls apart, and
+ * whatever it contained (`<monitor>`, `@example`, ...) is interpreted as
+ * markup. `<tt>` has no such ambiguity; the content is escaped as prose,
+ * which Doxygen resolves back inside the element.
+ */
 function escapeInlineCode(text) {
-  return '`' + String(text == null ? '' : text).replace(/`/g, "'").replace(/\*\//g, '*\\/') + '`';
+  return `<tt>${escapePlain(neutralizeCommentDelimiters(text)).replace(/`/g, "'")}</tt>`;
 }
 
 class Doc {
@@ -135,7 +174,16 @@ class Doc {
       if (separators && body.length && body[body.length - 1] !== '') body.push('');
       for (const l of lines) body.push(l);
     };
-    pushBlock(trimBlank(this.text));
+    // The brief is marked explicitly rather than left to JAVADOC_AUTOBRIEF.
+    // That heuristic ends the brief at the first `.` that is not followed by
+    // a letter -- including one inside an element, which then gets split
+    // across brief and detailed description: `<tt>${a}.${b}</tt>` leaves the
+    // `<tt>` unclosed in the brief and the `</tt>` orphaned after it. The
+    // first paragraph of a JSDoc comment is its summary by convention, so
+    // that is what becomes the brief.
+    const text = trimBlank(this.text);
+    if (text.length) text[0] = `@brief ${text[0]}`;
+    pushBlock(text);
     pushBlock(this.commands);
     const notes = this.notes.filter((l) => l && l.trim());
     if (notesInline && notes.length && body.length) {
@@ -202,4 +250,12 @@ function trimBlank(lines) {
   return out;
 }
 
-module.exports = { Doc, HTML_TAGS, escapeInlineCode, escapePlain, escapeProse, escapeText };
+module.exports = {
+  Doc,
+  HTML_TAGS,
+  escapeInlineCode,
+  escapePlain,
+  escapeProse,
+  escapeText,
+  neutralizeCommentDelimiters,
+};

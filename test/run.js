@@ -140,13 +140,14 @@ contains('getter', shapes, 'virtual number currentScale()');
 contains('setter', shapes, 'virtual void currentScale(number value)');
 contains('constructor parameter property', shapes, 'public: number width;');
 contains('generic class -> template', shapes, 'template< typename T > class ShapeBag {');
-contains('generic constraint in docs', shapes, 'TypeScript type parameters: `T extends Shape`');
+contains('generic constraint in docs', shapes,
+  'TypeScript type parameters: <tt>T extends Shape</tt>');
 contains('implicit constructor synthesized', shapes, 'ShapeBag();');
 
 // enums and type aliases
 contains('enum -> enum class', types, 'enum class Direction {');
 contains('enum member value', types, 'Left = -1,');
-contains('const enum noted', types, 'TypeScript `const enum`');
+contains('const enum noted', types, 'TypeScript <tt>const enum</tt>');
 contains('simple alias -> typedef', types, 'typedef number Pixels;');
 contains('union -> sanitized identifier', types, 'typedef string_or_number_or_boolean Scalar;');
 contains('nullable union collapses', types, 'typedef string MaybeName;');
@@ -161,7 +162,7 @@ contains('generic alias default qualified', types,
 contains('keyof type', types, 'typedef keyof_Identified IdentifiedKey;');
 contains('template literal type -> string', types, 'typedef string EventName;');
 contains('original TS type kept in docs', types,
-  'TypeScript type alias: `export type Scalar = string | number | boolean;`');
+  'TypeScript type alias: <tt>export type Scalar = string | number | boolean;</tt>');
 
 // interfaces with exotic members
 contains('index signature -> operator[]', types, 'V operator[](string key);');
@@ -183,13 +184,13 @@ contains('rest parameter', functions, 'Array< string > parts)');
 contains('destructured parameter', functions, 'string place(object arg0)');
 // `double` is a C++ keyword, so the emitted name gets a trailing underscore.
 contains('arrow function -> free function', functions, 'number double_(number value)');
-contains('async noted', functions, '@note `async` function.');
+contains('async noted', functions, '@note <tt>async</tt> function.');
 // Generated notes get a `%` on their leading word so Doxygen's AUTOLINK_SUPPORT
 // does not turn boilerplate into a link to a same-named class.
 contains('generator noted', functions, '@note %Generator function.');
-contains('named export noted', functions, 'Exported as named export `identity`');
+contains('named export noted', functions, 'Exported as named export <tt>identity</tt>');
 contains('default export noted', functions, '@note %Default export of this module.');
-contains('re-export noted', functions, 'Exported as named export `helper`');
+contains('re-export noted', functions, 'Exported as named export <tt>helper</tt>');
 
 // overloads: signatures are declarations, never pure virtual, and the
 // implementation signature is not part of the documented API
@@ -240,9 +241,9 @@ contains('@param converted', docs, '@param input the raw label');
 contains('@param for the second parameter', docs, '@param maximum maximum length');
 contains('@returns -> @return', docs, '@return the normalized label');
 contains('@throws keeps the exception type as its first token', docs,
-  '@throws RangeError when `maximum` is negative');
+  '@throws RangeError when <tt>maximum</tt> is negative');
 contains('@deprecated passed through', docs,
-  '@deprecated use @ref src::docs::betterNormalize instead');
+  '@deprecated use @ref src::docs::betterNormalize "betterNormalize" instead');
 contains('@since passed through', docs, '@since 0.2.0');
 contains('@typeParam -> @tparam', docs, '@tparam T the element type');
 
@@ -258,7 +259,7 @@ contains('{@link X} -> resolved @ref', docs, '@ref src::shapes::Circle');
 contains('{@link X.y | label} -> @ref with a label', docs,
   '@ref src::shapes::Circle::area "the area method"');
 contains('{@link} to a sibling in the same module', docs, '@ref src::docs::betterNormalize');
-contains('unresolvable {@link} becomes plain text', docs, '`NotAThingAnywhere`');
+contains('unresolvable {@link} becomes plain text', docs, '<tt>NotAThingAnywhere</tt>');
 absent('unresolvable {@link} is not a reference', docs, '@ref NotAThingAnywhere');
 contains('{@link url} becomes the bare URL', docs, 'https://example.com/docs');
 for (const [file, text] of outputs) {
@@ -302,23 +303,27 @@ contains('@returns on void becomes a note', docs, '@note %Returns: nothing at al
 absent('@returns on void is not a @return', docs, '@return nothing at all');
 
 // parameters that cannot be matched to the emitted signature
+// `options` itself now matches: a destructured parameter takes the name its
+// documentation uses, so only the dotted members remain unmatched.
+contains('destructured parameter named from its documentation', docs,
+  'number rectangleArea(object options)');
 contains('unmatched @param names collected in a note', docs,
-  '@note %Documented TypeScript parameters: `options`: the options;');
+  '@note %Documented TypeScript parameters: <tt>options.width</tt>: the width;');
 absent('no @param for a destructured member', docs, '@param options.width');
 
 // TSDoc-only tags
 contains('@remarks becomes a paragraph', docs, 'Changing this affects every caller.');
 contains('@defaultValue', docs, '@note %Default value: 42');
-contains('@internal noted', docs, 'Marked `@internal` in the TypeScript source.');
-contains('unknown tag carried over', docs, '@note `@customTag` with a value');
-contains('@group carried over', docs, '@note `@group`: Utilities');
+contains('@internal noted', docs, 'Marked <tt>\\@internal</tt> in the TypeScript source.');
+contains('unknown tag carried over', docs, '@note <tt>\\@customTag</tt> with a value');
+contains('@group carried over', docs, '@note <tt>\\@group</tt>: Utilities');
 
 // escaping of Doxygen-special characters in prose
 contains('@ escaped in prose', docs, 'a\\@b');
 contains('% escaped in prose', docs, '100\\%');
 contains('# escaped in prose', docs, 'C\\#');
 contains('angle brackets escaped in prose', docs, 'Array\\<T\\> in prose');
-contains('backtick code left verbatim', docs, '`Array<T>` in code');
+contains('backtick code becomes an escaped tt element', docs, '<tt>Array\\<T\\></tt> in code');
 contains('backslash escaped in prose', docs, '\\\\backslash');
 
 // JavaScript JSDoc
@@ -421,6 +426,44 @@ check('unresolved call sampled', (appStats.samples || []).some((t) => t.includes
     .translate(path.join(SRC, 'app.ts'));
   absent('--no-bodies emits no call statements', bare.text, 'src::shapes::Rectangle::Rectangle();');
   contains('--no-bodies still emits declarations', bare.text, 'virtual void populate();');
+}
+
+/* --- phase 4: pre-generation mode --- */
+
+{
+  const os = require('os');
+  const { filterFile } = require('../src/index');
+  const pregen = require('../src/pregen');
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts2doxy-pregen-'));
+  const code = pregen.run([SRC], { out: outDir, quiet: true });
+  check('pregen exits successfully', code === 0, `exit code ${code}`);
+
+  const generated = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else generated.push(full);
+    }
+  };
+  walk(outDir);
+  check('pregen mirrors the source tree',
+    generated.length === fs.readdirSync(SRC).length,
+    `${generated.length} file(s) for ${fs.readdirSync(SRC).length} source(s)`);
+
+  // The two modes must agree: per-file filtering builds the Program from one
+  // file's import closure, pre-generation from the whole file list, and a
+  // documentation build has to come out the same either way.
+  for (const file of fs.readdirSync(SRC)) {
+    const mirrored = path.join(outDir, 'src', file);
+    check(`pregen wrote src/${file}`, fs.existsSync(mirrored));
+    if (!fs.existsSync(mirrored)) continue;
+    const viaFilter = filterFile(path.join(SRC, file)).text;
+    check(`pregen output for ${file} matches per-file filtering`,
+      fs.readFileSync(mirrored, 'utf8') === viaFilter,
+      'the two modes produced different pseudo-code');
+  }
+  fs.rmSync(outDir, { recursive: true, force: true });
 }
 
 // hygiene: nothing that would break Doxygen's parser. No `//` outside a

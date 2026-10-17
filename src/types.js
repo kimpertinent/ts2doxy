@@ -37,11 +37,26 @@ const KEYWORD_TYPES = new Map([
   [ts.SyntaxKind.IntrinsicKeyword, 'intrinsic'],
 ]);
 
-/** Normalized one-line rendering of the TypeScript source text of a type. */
+/**
+ * Normalized one-line rendering of the TypeScript source text of a node.
+ *
+ * Comments are stripped: an inline object type routinely documents its own
+ * members, and quoting a whole nested JSDoc inside a generated comment is
+ * unreadable at best -- and its `@example`/`@param` tags would be read as
+ * commands of the comment carrying it.
+ */
+function sourceTextWithoutComments(text) {
+  return String(text || '')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|\s)\/\/[^\n]*/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function typeSourceText(node) {
   if (!node || !node.getText) return '';
   try {
-    return node.getText().replace(/\s+/g, ' ').trim();
+    return sourceTextWithoutComments(node.getText());
   } catch {
     return '';
   }
@@ -501,6 +516,7 @@ const KEYWORD_TYPES_BY_NAME = new Set([...KEYWORD_TYPES.values()]);
 
 module.exports = {
   isSimpleIdentifier,
+  sourceTextWithoutComments,
   mapCheckerType,
   qualifyTypeSymbol,
   splitTopLevel,
