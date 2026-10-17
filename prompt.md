@@ -68,3 +68,73 @@ Acceptance criteria:
 - Dependencies: FOSS only.
 - Work in phases: (1) declarations + inheritance diagrams, (2) JSDoc conversion, (3) call graphs, (4) performance / pre-generation mode. Show results after each phase.
 - Ask before deviating from this plan or adding features not listed here.
+
+---
+
+# Progress
+
+## Environment
+
+Doxygen 1.9.8, Graphviz 2.43.0, Node.js 22, `typescript` 5.9.3 (pinned to 5.x:
+the 7.x native port does not expose the full Compiler API used here).
+
+Finding that shaped the design: **Doxygen 1.9.8 ignores `#line` directives in
+filter output** (verified by feeding it `#line 100 "orig.ts"` and reading the
+`<location line="...">` from the XML — it reported the physical line). Line
+numbers are therefore preserved by *layout*: every declaration is emitted on
+its original source line, and doc blocks are shrunk to fit the free space above
+it (`src/canvas.js`). With `FILTER_SOURCE_FILES = NO` Doxygen then shows the
+real TypeScript and its line references are correct.
+
+## Phase 1 — declarations + inheritance diagrams: done
+
+Delivered:
+
+* `bin/ts2doxy.js` — CLI / filter entry point. Never writes anything but
+  pseudo-code to stdout, and skips a file with a warning instead of aborting a
+  documentation build (`--strict` to opt out).
+* `src/` — `project.js` (tsconfig discovery, `Program` creation),
+  `names.js` (path → namespace, C++ identifier sanitization),
+  `symbols.js` (qualified names, shared by inheritance and call resolution),
+  `types.js` (TS type → Doxygen-parseable type), `doc.js` + `jsdoc.js`
+  (comment blocks, escaping), `canvas.js` (line-anchored output),
+  `translate.js` (the emitter).
+* `Doxyfile.sample` — commented, every non-obvious setting explained.
+* `test/fixtures/src/{shapes,types,functions,app}.ts`, `legacy.js` — cover
+  every mapping rule in the task.
+* `test/run.js` — 88 checks: translation assertions per mapping rule, zero
+  line drift, balanced braces, plus a Doxygen integration run.
+* `README.md`.
+
+Results (`npm test`): **88 checks passed, 0 failed**.
+
+* Doxygen run over the fixtures: **no warnings, no parser errors**
+  (`doxygen-warnings.log` empty), 7.9 s, 67 SVG diagrams.
+* Inheritance extracted exactly as written in the TypeScript, e.g.
+  `Rectangle : AbstractShape, Drawable`, `Square : Rectangle`,
+  `AbstractShape : Shape`, `NamedAndIdentified : Named, Identified`.
+* Declaration line numbers match the TypeScript source exactly
+  (drift 0 on all five fixtures).
+* UML class diagram for `Rectangle` shows the full hierarchy with typed fields
+  and operations (`virtual number area()`, `static number instances`, …).
+* Cross-file type references are fully qualified
+  (`src::types::Comparator< T >`), so collaboration graphs link up.
+
+Decisions taken inside the plan (all documented in the README):
+
+* Primitive names are kept as written in TypeScript (`number`, `string`,
+  `boolean`) rather than being mapped to `double`/`std::string` — they are
+  legal C++ identifiers and claiming `number` is a `double` would mislead.
+* Instance methods are emitted `virtual` (TypeScript dispatch is dynamic; it
+  also makes Doxygen show “Reimplemented from”). `--no-virtual` disables it.
+* Classes without an explicit constructor get a synthesized one, documented as
+  such, so that `new Foo()` call edges have a target. `--no-implicit-ctors`
+  disables it.
+* `T | null` / `T | undefined` collapse to `T` so the member still links to
+  `T`; the original union is in the doc block.
+
+## Phase 2 — JSDoc/TSDoc conversion: not started
+
+## Phase 3 — call graphs: not started
+
+## Phase 4 — performance / pre-generation mode: not started

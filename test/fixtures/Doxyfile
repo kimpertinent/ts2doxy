@@ -1,0 +1,194 @@
+# ---------------------------------------------------------------------------
+# Sample Doxyfile for documenting a TypeScript / JavaScript project through
+# ts2doxy.  Copy it next to your tsconfig.json, adjust PROJECT_NAME, INPUT and
+# the FILTER_PATTERNS path, then run `doxygen Doxyfile`.
+#
+# Tested with Doxygen 1.9.8 and Graphviz 2.43.
+# ---------------------------------------------------------------------------
+
+PROJECT_NAME           = "ts2doxy fixtures"
+PROJECT_BRIEF          = "Documented with Doxygen via ts2doxy"
+OUTPUT_DIRECTORY       = doxygen-out
+CREATE_SUBDIRS         = NO
+
+# ---------------------------------------------------------------------------
+# Input
+# ---------------------------------------------------------------------------
+
+INPUT                  = src
+RECURSIVE              = YES
+INPUT_ENCODING         = UTF-8
+
+# Doxygen only looks at files matching FILE_PATTERNS.  `.d.ts` files are
+# matched by `*.ts` as well; drop them from EXCLUDE_PATTERNS below if you want
+# ambient declarations documented too.
+FILE_PATTERNS          = *.ts *.tsx *.mts *.cts *.js *.jsx *.mjs *.cjs
+
+EXCLUDE_PATTERNS       = */node_modules/* \
+                         */dist/* \
+                         */build/* \
+                         */coverage/* \
+                         *.min.js \
+                         
+
+EXCLUDE_SYMLINKS       = YES
+
+# ---------------------------------------------------------------------------
+# The filter
+# ---------------------------------------------------------------------------
+
+# Doxygen has no TypeScript parser.  EXTENSION_MAPPING tells it to hand these
+# extensions to the C++ parser, which is the language ts2doxy translates into.
+# (Doxygen does ship a `Javascript` parser, but it produces no class,
+# inheritance or call graphs -- that is the whole reason for this filter.)
+EXTENSION_MAPPING      = ts=C++ \
+                         tsx=C++ \
+                         mts=C++ \
+                         cts=C++ \
+                         js=C++ \
+                         jsx=C++ \
+                         mjs=C++ \
+                         cjs=C++
+
+# Doxygen runs `<filter> <input-file>` and parses the filter's stdout instead
+# of the file.  Use an absolute path, or a path relative to the directory you
+# run doxygen from.  Quote the command when it has arguments.
+#
+# If ts2doxy is installed as a dependency of the documented project:
+FILTER_PATTERNS        = *.ts="node ../../bin/ts2doxy.js --strict" \
+                         *.tsx="node ../../bin/ts2doxy.js --strict" \
+                         *.mts="node ../../bin/ts2doxy.js --strict" \
+                         *.cts="node ../../bin/ts2doxy.js --strict" \
+                         *.js="node ../../bin/ts2doxy.js --strict" \
+                         *.jsx="node ../../bin/ts2doxy.js --strict" \
+                         *.mjs="node ../../bin/ts2doxy.js --strict" \
+                         *.cjs="node ../../bin/ts2doxy.js --strict"
+
+# INPUT_FILTER would apply one command to every input file regardless of
+# extension; FILTER_PATTERNS is preferred because it leaves Markdown, images
+# and other inputs untouched.
+# INPUT_FILTER         = "node ../../bin/ts2doxy.js --strict"
+
+# Critical: keep this at NO.  ts2doxy emits every declaration on the line it
+# occupies in the original file, so with FILTER_SOURCE_FILES = NO the source
+# browser shows the real TypeScript and "Definition at line N" is correct.
+# Setting it to YES would show the generated pseudo-code instead.
+FILTER_SOURCE_FILES    = NO
+
+# ---------------------------------------------------------------------------
+# What to extract
+# ---------------------------------------------------------------------------
+
+# Undocumented declarations are translated as well, so EXTRACT_ALL makes the
+# whole API show up (and is what makes the call graphs complete).
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = YES
+EXTRACT_PRIV_VIRTUAL   = YES
+EXTRACT_STATIC         = YES
+EXTRACT_LOCAL_CLASSES  = YES
+EXTRACT_LOCAL_METHODS  = YES
+EXTRACT_ANON_NSPACES   = YES
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+INTERNAL_DOCS          = YES
+CASE_SENSE_NAMES       = YES
+SORT_MEMBER_DOCS       = NO
+SORT_BRIEF_DOCS        = NO
+INHERIT_DOCS           = YES
+
+# ts2doxy writes `@param`/`@return`/... as Javadoc-style tags and relies on
+# Markdown for the prose it copies out of JSDoc comments.
+JAVADOC_AUTOBRIEF      = YES
+MARKDOWN_SUPPORT       = YES
+AUTOLINK_SUPPORT       = YES
+
+# The emitted pseudo-code uses `std::function<...>` for TypeScript function
+# types; this keeps Doxygen from trying to document them as user classes.
+BUILTIN_STL_SUPPORT    = YES
+
+# There are no preprocessor directives in the generated pseudo-code.
+ENABLE_PREPROCESSING   = NO
+
+# ---------------------------------------------------------------------------
+# Source browser and cross references
+# ---------------------------------------------------------------------------
+
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+STRIP_CODE_COMMENTS    = NO
+REFERENCED_BY_RELATION = YES
+REFERENCES_RELATION    = YES
+REFERENCES_LINK_SOURCE = YES
+VERBATIM_HEADERS       = NO
+
+# ---------------------------------------------------------------------------
+# Diagrams (this is what Doxygen gives you over TypeDoc)
+# ---------------------------------------------------------------------------
+
+HAVE_DOT               = YES
+# DOT_PATH             = /usr/bin          # set if `dot` is not on PATH
+
+# UML_LOOK renders classes as UML boxes with their attributes and operations
+# instead of plain name boxes.
+UML_LOOK               = YES
+# 0 = no limit on the number of fields shown inside a UML box.
+UML_LIMIT_NUM_FIELDS   = 0
+# Show types and argument lists inside the UML boxes.
+DOT_UML_DETAILS        = YES
+DOT_WRAP_THRESHOLD     = 17
+
+# Inheritance / collaboration graphs.
+CLASS_GRAPH            = YES
+COLLABORATION_GRAPH    = YES
+GROUP_GRAPHS           = YES
+TEMPLATE_RELATIONS     = YES
+DIRECTORY_GRAPH        = YES
+
+# Textual inheritance lists in addition to the graphs.
+INHERITANCE_GRAPH      = YES
+
+# ts2doxy emits no `#include` directives, so these two would always be empty.
+INCLUDE_GRAPH          = NO
+INCLUDED_BY_GRAPH      = NO
+
+# The headline feature: ts2doxy fills every function body with the (fully
+# qualified) calls that function makes, which is what Doxygen needs to build
+# these two.
+CALL_GRAPH             = YES
+CALLER_GRAPH           = YES
+
+DOT_IMAGE_FORMAT       = svg
+INTERACTIVE_SVG        = YES
+# Raise these on large projects if graphs come out truncated ("graph is
+# truncated" notice under a diagram).
+DOT_GRAPH_MAX_NODES    = 100
+MAX_DOT_GRAPH_DEPTH    = 0
+DOT_CLEANUP            = YES
+DOT_NUM_THREADS        = 0
+
+# ---------------------------------------------------------------------------
+# Output formats
+# ---------------------------------------------------------------------------
+
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+GENERATE_TREEVIEW      = YES
+FULL_SIDEBAR           = NO
+HTML_DYNAMIC_SECTIONS  = YES
+SEARCHENGINE           = YES
+
+GENERATE_LATEX         = NO
+GENERATE_XML           = YES
+
+# ---------------------------------------------------------------------------
+# Warnings
+# ---------------------------------------------------------------------------
+
+QUIET                  = NO
+WARNINGS               = YES
+# EXTRACT_ALL already documents everything, so this would only produce noise.
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = NO
+WARN_AS_ERROR          = NO
+WARN_LOGFILE           = doxygen-warnings.log
