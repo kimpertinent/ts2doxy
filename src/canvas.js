@@ -21,6 +21,18 @@
  *
  * Only generated block comments are emitted, never `//` line comments, so
  * appending to an existing line can never comment out code.
+ *
+ * One thing must NOT share a line, though: a declaration. Doxygen 1.9.8
+ * invents cross-references between declarations that sit on the same line --
+ * `class P { public: int a(); public: void b(); };` on one line is reported as
+ * `P::a -> a, b` -- and two inline member bodies on one line have their calls
+ * merged into the first, losing the second one's edges. Separators (`;;`,
+ * comments, extra access specifiers) make no difference, and Doxygen ignores
+ * `#line`, so the only cure is to put each declaration on a line of its own.
+ * Fragments passed `solo: true` therefore start a new line rather than share,
+ * which costs the exact line number of every declaration after the first on a
+ * compact source line. Closing braces and call statements are safe to share
+ * (verified against Doxygen 1.9.8) and still do.
  */
 
 class Canvas {
@@ -37,10 +49,13 @@ class Canvas {
    * @param {string[]|{variants:Function}} [doc] the documentation block,
    *        placed just above: either ready-made lines, or a `Doc` offering
    *        several renderings to choose from once the free space is known.
-   * @param {{shared?: boolean}} [opts] `shared` marks a fragment that is
-   *        *expected* to share its line with another one (a constructor
-   *        parameter property, a synthesized constructor), so that it is not
-   *        counted as line drift.
+   * @param {{shared?: boolean, solo?: boolean}} [opts]
+   *        `shared` marks a fragment that may share its line with another and
+   *        should not be counted as drift (a closing brace, a call
+   *        statement). `solo` marks one that must never share a line: see
+   *        below. `synthetic` marks a declaration that has no line in the
+   *        original source at all (a constructor the filter invented), so
+   *        moving it is not a loss of fidelity.
    */
   put(anchor, code, doc, opts) {
     this.items.push({
@@ -48,6 +63,8 @@ class Canvas {
       code,
       doc: doc || null,
       shared: !!(opts && opts.shared),
+      solo: !!(opts && opts.solo) && !(opts && opts.allowShared),
+      synthetic: !!(opts && opts.synthetic),
     });
   }
 
@@ -82,6 +99,11 @@ class Canvas {
       if (item.anchor > written()) {
         padTo(item.anchor - 1);
         out.push(item.code);
+      } else if (item.solo) {
+        // Declarations may not share a line (see the note above), so this one
+        // starts a new one and gives up its exact line number.
+        out.push(item.code);
+        if (!item.synthetic) this.drift++;
       } else {
         appendToLast(item.code);
         if (!item.shared) this.drift++;
