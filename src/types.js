@@ -16,7 +16,9 @@
 
 const ts = require('typescript');
 const { sanitizeIdentifier } = require('./names');
-const { isProjectFile, qualifiedNameOfSymbol, resolveAlias } = require('./symbols');
+const {
+  isProjectFile, qualifiedNameOfDeclaration, qualifiedNameOfSymbol, resolveAlias,
+} = require('./symbols');
 
 const MAX_SYNTHETIC_NAME = 48;
 
@@ -53,6 +55,54 @@ function lastSegment(name) {
 
 function isSimpleIdentifier(name) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+}
+
+const OPENERS = '<([{';
+const CLOSERS = '>)]}';
+
+/**
+ * Split a printed type on `separators` that appear at nesting depth 0.
+ *
+ * Naive splitting would cut `Map<string, number>` in half and turn
+ * `A<x> | B<y>` into nonsense, which is how inferred type arguments used to
+ * get lost.
+ */
+function splitTopLevel(text, separators) {
+  const parts = [];
+  let current = '';
+  let depth = 0;
+  let quote = null;
+  let previous = '';
+  for (const ch of String(text)) {
+    if (quote) {
+      current += ch;
+      if (ch === quote) quote = null;
+      previous = ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      current += ch;
+      previous = ch;
+      continue;
+    }
+    if (OPENERS.includes(ch)) {
+      depth++;
+    } else if (CLOSERS.includes(ch)) {
+      // `=>` is an arrow, not a closing bracket.
+      if (!(ch === '>' && previous === '=')) depth = Math.max(0, depth - 1);
+    }
+    if (depth === 0 && separators.includes(ch) && !(ch === '>' && previous === '=')) {
+      parts.push(current);
+      current = '';
+      previous = ch;
+      continue;
+    }
+    current += ch;
+    previous = ch;
+  }
+  parts.push(current);
+  return parts.map((p) => p.trim()).filter(Boolean);
 }
 
 /** Join constituent type names into one identifier, e.g. `string_or_number`. */
@@ -278,16 +328,117 @@ function qualifyTypeSymbol(type, ctx) {
   return qualified ? qualified.join('::') : null;
 }
 
-/** Map a `ts.Type` obtained from the checker onto an emittable type name. */
+/** Primitive `ts.Type`s, by flag. Checked before unions: `boolean` is one. */
+function primitiveTypeName(type) {
+  const F = ts.TypeFlags;
+  const flags = type.flags;
+  if (flags & F.Boolean) return 'boolean';
+  if (flags & F.BooleanLiteral) return 'boolean';
+  if (flags & F.Void) return 'void';
+  if (flags & F.Undefined) return 'undefined';
+  if (flags & F.Null) return 'null';
+  if (flags & F.Never) return 'never';
+  if (flags & F.Any) return 'any';
+  if (flags & F.Unknown) return 'unknown';
+  if (flags & F.StringLike) return 'string';
+  if (flags & F.NumberLike) return 'number';
+  if (flags & F.BigIntLike) return 'bigint';
+  if (flags & F.ESSymbolLike) return 'symbol';
+  if (flags & F.TypeParameter) {
+    return sanitizeIdentifier(type.symbol ? type.symbol.name : 'T', 'T');
+  }
+  return null;
+}
+
+/** The enum a type belongs to, qualified, or null. */
+function qualifiedEnumName(type, ctx) {
+  const symbol = type.getSymbol && type.getSymbol();
+  const decl = symbol && symbol.declarations && symbol.declarations[0];
+  const target = decl && ts.isEnumMember(decl) ? decl.parent : decl;
+  if (!target || !isProjectFile(target.getSourceFile(), ctx)) return null;
+  const qualified = qualifiedNameOfDeclaration(target, ctx);
+  return qualified ? qualified.join('::') : null;
+}
+
+/** Type arguments of a generic reference such as `Map<string, number>`. */
+function typeArgumentsOf(type, ctx) {
+  try {
+    if (!(type.flags & ts.TypeFlags.Object)) return null;
+    if (!(type.objectFlags & ts.ObjectFlags.Reference)) return null;
+    const args = ctx.checker.getTypeArguments(type);
+    return args && args.length ? args : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Name of a type's own symbol, unless it is one of TypeScript's internal ones. */
+function headNameOf(type) {
+  const symbol = type.getSymbol && type.getSymbol();
+  const name = symbol && symbol.name;
+  if (!name || name.startsWith('__')) return null;
+  return sanitizeIdentifier(name, 'any');
+}
+
+/**
+ * Map a `ts.Type` obtained from the checker onto an emittable type name.
+ *
+ * Done structurally rather than by printing the type and parsing the text,
+ * so that type arguments survive (`new Map<string, Foo>()` stays
+ * `Map< string, ns::Foo >`) and user types keep their qualified names.
+ */
 function mapCheckerType(type, node, ctx, fallback = 'auto') {
   if (!type) return fallback;
-  const qualified = qualifyTypeSymbol(type, ctx);
-  if (qualified) return qualified;
-  const printed = ctx.checker.typeToString(
-    type,
-    node,
-    ts.TypeFormatFlags.NoTruncation,
-  );
+
+  const primitive = primitiveTypeName(type);
+  if (type.flags & ts.TypeFlags.EnumLike) {
+    const enumName = qualifiedEnumName(type, ctx);
+    if (enumName) return enumName;
+  }
+  if (primitive) return primitive;
+
+  // A type alias is more informative than the type it expands to.
+  if (type.aliasSymbol) {
+    const head = qualifyTypeSymbol(type, ctx)
+      || (isProjectFile(
+        (type.aliasSymbol.declarations || [])[0]
+        && type.aliasSymbol.declarations[0].getSourceFile(), ctx,
+      )
+        ? (qualifiedNameOfSymbol(type.aliasSymbol, ctx) || []).join('::')
+        : null)
+      || sanitizeIdentifier(type.aliasSymbol.name, 'any');
+    const args = type.aliasTypeArguments;
+    if (head) {
+      return args && args.length
+        ? `${head}< ${args.map((a) => mapCheckerType(a, node, ctx, 'any')).join(', ')} >`
+        : head;
+    }
+  }
+
+  if (type.isUnion && type.isUnion()) {
+    const kept = type.types.filter(
+      (t) => !(t.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)),
+    );
+    const effective = (kept.length ? kept : type.types)
+      .map((t) => mapCheckerType(t, node, ctx, 'any'));
+    const unique = [...new Set(effective)];
+    if (unique.length === 1) return unique[0];
+    return combineNames(unique, '_or_', 'Union');
+  }
+  if (type.isIntersection && type.isIntersection()) {
+    const unique = [...new Set(type.types.map((t) => mapCheckerType(t, node, ctx, 'any')))];
+    if (unique.length === 1) return unique[0];
+    return combineNames(unique, '_and_', 'Intersection');
+  }
+
+  const head = qualifyTypeSymbol(type, ctx) || headNameOf(type);
+  const args = typeArgumentsOf(type, ctx);
+  if (head && args) {
+    return `${head}< ${args.map((a) => mapCheckerType(a, node, ctx, 'any')).join(', ')} >`;
+  }
+  if (head) return head;
+
+  const printed = ctx.checker.typeToString(type, node, ts.TypeFormatFlags.NoTruncation);
   return sanitizeTypeText(printed, fallback);
 }
 
@@ -310,27 +461,36 @@ function sanitizeTypeText(text, fallback = 'auto') {
   if (!t) return fallback;
   if (t === 'void' || KEYWORD_TYPES_BY_NAME.has(t)) return t;
   if (isSimpleIdentifier(t)) return sanitizeIdentifier(t, fallback);
-  // `Foo[]`
-  const arr = /^([A-Za-z_][A-Za-z0-9_.]*)\[\]$/.exec(t);
-  if (arr) return `Array< ${sanitizeIdentifier(arr[1].split('.').pop(), 'any')} >`;
-  // `Promise<Foo>` and friends: keep the head, map the first argument crudely.
-  const generic = /^([A-Za-z_][A-Za-z0-9_.]*)<(.+)>$/.exec(t);
-  if (generic) {
-    const head = sanitizeIdentifier(generic[1].split('.').pop(), 'any');
-    const inner = sanitizeTypeText(generic[2], 'any');
-    return `${head}< ${inner} >`;
-  }
   if (/^".*"$|^'.*'$/.test(t)) return 'string';
   if (/^-?[0-9]/.test(t)) return 'number';
-  if (t.includes('|')) {
-    const parts = t.split('|').map((p) => sanitizeTypeText(p.trim(), 'any'));
+
+  // Unions and intersections first: `A<x> | B<y>` must not be read as a
+  // generic instantiation of `A`.
+  const union = splitTopLevel(t, '|');
+  if (union.length > 1) {
+    const parts = union.map((p) => sanitizeTypeText(p, 'any'));
     const kept = [...new Set(parts.filter((p) => p !== 'undefined' && p !== 'null'))];
     if (kept.length === 1) return kept[0];
-    return combineNames(kept.length ? kept : parts, '_or_', 'Union');
+    return combineNames(kept.length ? kept : [...new Set(parts)], '_or_', 'Union');
   }
-  if (t.includes('&')) {
-    const parts = t.split('&').map((p) => sanitizeTypeText(p.trim(), 'any'));
-    return combineNames([...new Set(parts)], '_and_', 'Intersection');
+  const intersection = splitTopLevel(t, '&');
+  if (intersection.length > 1) {
+    const parts = [...new Set(intersection.map((p) => sanitizeTypeText(p, 'any')))];
+    if (parts.length === 1) return parts[0];
+    return combineNames(parts, '_and_', 'Intersection');
+  }
+
+  // `Foo[]`, `Map<string, number>[]`
+  if (t.endsWith('[]')) {
+    const element = t.slice(0, -2).replace(/^\((.*)\)$/, '$1');
+    if (element) return `Array< ${sanitizeTypeText(element, 'any')} >`;
+  }
+  // `Promise<Foo>`, `Map<string, number>`
+  const generic = /^([A-Za-z_][A-Za-z0-9_.]*)\s*<(.+)>$/.exec(t);
+  if (generic) {
+    const head = sanitizeIdentifier(generic[1].split('.').pop(), 'any');
+    const args = splitTopLevel(generic[2], ',').map((a) => sanitizeTypeText(a, 'any'));
+    return args.length ? `${head}< ${args.join(', ')} >` : head;
   }
   if (t.includes('=>')) return 'Function';
   if (t.startsWith('{')) return 'object';
@@ -343,6 +503,7 @@ module.exports = {
   isSimpleIdentifier,
   mapCheckerType,
   qualifyTypeSymbol,
+  splitTopLevel,
   mapHeritageName,
   mapInferredType,
   mapTypeNode,

@@ -135,7 +135,11 @@ class Translator {
    * ------------------------------------------------------------------ */
 
   emitStatements(statements) {
-    for (const st of statements) this.emitStatement(st);
+    const implementations = overloadImplementations(statements);
+    for (const st of statements) {
+      if (implementations.has(st)) continue; // overload implementation signature
+      this.emitStatement(st);
+    }
   }
 
   emitStatement(st) {
@@ -189,34 +193,48 @@ class Translator {
     this.stats[isInterface ? 'interfaces' : 'classes']++;
   }
 
-  /** Emit the body of a class or interface, inserting access specifiers. */
+  /** Emit the body of a class or interface, with an access specifier on
+   * every member.
+   *
+   * The specifier is repeated rather than tracked as state: members whose
+   * access differs can share an output line (a constructor and the parameter
+   * properties it declares), and a stale `private:` section would then make
+   * Doxygen report the following members with the wrong protection.
+   */
   emitMembers(node, info) {
-    let access = null;
+    const members = node.members || [];
+    // In an overload set TypeScript's implementation signature is not part of
+    // the API -- only the overload signatures are callable -- so it is not
+    // emitted as a declaration of its own.
+    const implementations = overloadImplementations(members);
     let sawConstructor = false;
-    const setAccess = (want) => {
-      if (access === want) return '';
-      access = want;
-      return `${want}: `;
-    };
 
-    for (const member of node.members || []) {
-      const want = info.isInterface ? 'public' : accessOf(member);
-      const prefix = () => setAccess(want);
+    for (const member of members) {
+      const access = info.isInterface ? 'public' : accessOf(member);
+      const prefix = `${access}: `;
       if (ts.isConstructorDeclaration(member)) {
         sawConstructor = true;
-        this.emitConstructor(member, info, prefix());
+        if (implementations.has(member)) {
+          // Parameter properties are only allowed on the implementation, so
+          // the fields it declares still have to be emitted.
+          this.emitParameterProperties(member, info);
+        } else {
+          this.emitConstructor(member, info, prefix);
+        }
+      } else if (implementations.has(member)) {
+        continue;
       } else if (ts.isMethodDeclaration(member) || ts.isMethodSignature(member)) {
-        this.emitMethod(member, info, prefix());
+        this.emitMethod(member, info, prefix);
       } else if (ts.isPropertyDeclaration(member) || ts.isPropertySignature(member)) {
-        this.emitProperty(member, info, prefix());
+        this.emitProperty(member, info, prefix);
       } else if (ts.isGetAccessor(member) || ts.isSetAccessor(member)) {
-        this.emitAccessor(member, info, prefix());
+        this.emitAccessor(member, info, prefix);
       } else if (ts.isIndexSignatureDeclaration(member)) {
-        this.emitIndexSignature(member, info, prefix());
+        this.emitIndexSignature(member, info, prefix);
       } else if (ts.isCallSignatureDeclaration(member)) {
-        this.emitCallSignature(member, info, prefix());
+        this.emitCallSignature(member, info, prefix);
       } else if (ts.isConstructSignatureDeclaration(member)) {
-        this.emitConstructSignature(member, info, prefix());
+        this.emitConstructSignature(member, info, prefix);
       }
     }
 
@@ -225,9 +243,12 @@ class Translator {
     // the call edge to, so synthesize one (disable with --no-implicit-ctors).
     if (!sawConstructor && !info.isInterface && this.opts.implicitCtors !== false) {
       const doc = ['/** Implicitly declared constructor (not written in the TypeScript source). */'];
-      const prefix = access === 'public' ? '' : 'public: ';
-      if (prefix) access = 'public';
-      this.canvas.put(this.endLineOf(node), `${prefix}${info.name}();`, doc, { shared: true });
+      this.canvas.put(
+        this.endLineOf(node),
+        `public: ${info.name}();`,
+        doc,
+        { shared: true },
+      );
     }
   }
 
@@ -244,7 +265,11 @@ class Translator {
     );
     this.closeBody(node, body);
     this.stats.methods++;
-    // Parameter properties (`constructor(private x: number)`) declare fields.
+    this.emitParameterProperties(node, info);
+  }
+
+  /** `constructor(private x: number)` declares a field as well as a parameter. */
+  emitParameterProperties(node, info) {
     for (const p of node.parameters) {
       if (ts.getCombinedModifierFlags(p) & (MF.Private | MF.Protected | MF.Public | MF.Readonly)) {
         this.emitParameterProperty(p, info);
@@ -271,7 +296,9 @@ class Translator {
   emitMethod(node, info, prefix) {
     const name = nameText(node.name) || 'method';
     const isStatic = hasFlag(node, MF.Static);
-    const isAbstract = info.isInterface || hasFlag(node, MF.Abstract) || !node.body;
+    // Only `abstract` members and interface members are pure virtual. A method
+    // without a body is an overload signature or an ambient declaration.
+    const isAbstract = info.isInterface || hasFlag(node, MF.Abstract);
     const ret = this.returnType(node);
     const params = this.paramList(node);
     const notes = [];
@@ -280,22 +307,23 @@ class Translator {
     if (hasFlag(node, MF.Async)) notes.push('@note `async` function.');
     if (node.asteriskToken) notes.push('@note Generator function.');
     if (node.questionToken) notes.push('@note Optional member.');
-    const exported = null;
     const doc = buildDoc(node, this.ctx, { notes });
 
     const specifiers = [];
     if (isStatic) specifiers.push('static');
     else if (this.opts.virtualMethods !== false) specifiers.push('virtual');
     const template = this.templatePrefix(node);
-    const pure = isAbstract ? ' = 0' : '';
-    const body = isAbstract ? { open: `${pure};`, close: null } : this.bodyFor(node, name);
+    let body;
+    if (isAbstract) body = { open: ' = 0;', close: null };
+    else if (node.body) body = this.bodyFor(node, name);
+    else body = { open: ';', close: null };
 
     this.canvas.put(
       this.anchorOf(node),
       `${prefix}${template}${specifiers.join(' ')}${specifiers.length ? ' ' : ''}${ret} ${name}(${params})${body.open}`,
       doc.render(),
     );
-    if (!isAbstract) this.closeBody(node, body);
+    if (!isAbstract && node.body) this.closeBody(node, body);
     this.stats.methods++;
   }
 
@@ -356,14 +384,17 @@ class Translator {
     const specifiers = hasFlag(node, MF.Static) ? 'static ' : (this.opts.virtualMethods !== false ? 'virtual ' : '');
     const ret = isGetter ? this.returnType(node) : 'void';
     const params = isGetter ? '' : this.paramList(node);
-    const isAbstract = info.isInterface || hasFlag(node, MF.Abstract) || !node.body;
-    const body = isAbstract ? { open: ' = 0;', close: null } : this.bodyFor(node, name);
+    const isAbstract = info.isInterface || hasFlag(node, MF.Abstract);
+    let body;
+    if (isAbstract) body = { open: ' = 0;', close: null };
+    else if (node.body) body = this.bodyFor(node, name);
+    else body = { open: ';', close: null };
     this.canvas.put(
       this.anchorOf(node),
       `${prefix}${specifiers}${ret} ${name}(${params})${body.open}`,
       doc.render(),
     );
-    if (!isAbstract) this.closeBody(node, body);
+    if (!isAbstract && node.body) this.closeBody(node, body);
     this.stats.methods++;
   }
 
@@ -647,6 +678,37 @@ class Translator {
  * helpers
  * -------------------------------------------------------------------- */
 
+/**
+ * The implementation signatures of overload sets among `nodes`.
+ *
+ * TypeScript writes overloads as several body-less signatures followed by one
+ * implementation whose parameter types are the union of all of them. Only the
+ * signatures are callable, so only they are documented.
+ */
+function overloadImplementations(nodes) {
+  const groups = new Map();
+  for (const node of nodes) {
+    const isCandidate = ts.isConstructorDeclaration(node)
+      || ts.isMethodDeclaration(node)
+      || ts.isFunctionDeclaration(node);
+    if (!isCandidate) continue;
+    const key = ts.isConstructorDeclaration(node)
+      ? 'constructor'
+      : `${node.kind}:${node.name ? nameText(node.name) : ''}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(node);
+  }
+  const implementations = new Set();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const withBody = group.filter((n) => n.body);
+    if (withBody.length === 1 && group.length > withBody.length) {
+      implementations.add(withBody[0]);
+    }
+  }
+  return implementations;
+}
+
 function hasFlag(node, flag) {
   return (ts.getCombinedModifierFlags(node) & flag) !== 0;
 }
@@ -749,4 +811,11 @@ function isFaithful(mapped, source) {
   return false;
 }
 
-module.exports = { Translator, collectExports, declarationSourceText, isFaithful, literalInitializer };
+module.exports = {
+  Translator,
+  collectExports,
+  declarationSourceText,
+  isFaithful,
+  literalInitializer,
+  overloadImplementations,
+};

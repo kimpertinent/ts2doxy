@@ -67,6 +67,7 @@ Acceptance criteria:
 ## Working rules
 - Dependencies: FOSS only.
 - Work in phases: (1) declarations + inheritance diagrams, (2) JSDoc conversion, (3) call graphs, (4) performance / pre-generation mode. Show results after each phase.
+- After each phase, stop and wait for my approval before starting the next one.
 - Ask before deviating from this plan or adding features not listed here.
 
 ---
@@ -106,7 +107,8 @@ Delivered:
   line drift, balanced braces, plus a Doxygen integration run.
 * `README.md`.
 
-Results (`npm test`): **88 checks passed, 0 failed**.
+Results (`npm test`): **88 checks passed, 0 failed**. (Superseded by the
+review fixes below: 229 checks.)
 
 * Doxygen run over the fixtures: **no warnings, no parser errors**
   (`doxygen-warnings.log` empty), 7.9 s, 67 SVG diagrams.
@@ -133,7 +135,52 @@ Decisions taken inside the plan (all documented in the README):
 * `T | null` / `T | undefined` collapse to `T` so the member still links to
   `T`; the original union is in the doc block.
 
+### Phase 1 review fixes: done
+
+1. **Access leak.** A `private` constructor parameter property emitted a bare
+   `private:` section on the constructor's line, so every member after it was
+   reported private (`Circle.area` among them). Access is no longer tracked as
+   state: every class member now carries its own explicit specifier, because
+   members with different access can legitimately share an output line.
+   New test compares each member's protection in Doxygen's XML against a
+   hand-written table derived from the TypeScript source — hand-written on
+   purpose, so it does not just re-run the emitter's own logic.
+2. **Overload signatures were pure virtual.** A method is now `= 0` only when
+   it is `abstract` or an interface member; a body-less method is an overload
+   signature or an ambient declaration and is emitted as a plain declaration.
+   The implementation signature is no longer emitted as an extra overload
+   (it is not callable, and its parameter types are the union of all
+   overloads) — except that parameter properties declared on it are still
+   emitted, since TypeScript only allows them there.
+   *Open question for phase 3:* the implementation signature is the only one
+   with a body, i.e. the only source of call-graph edges. The plan is to
+   attach the extracted call body to the **last overload signature** (which
+   keeps the documented API exactly as written while preserving call edges).
+   Say the word if you would rather have the implementation documented as an
+   extra (e.g. private) member instead.
+3. **Inferred types lost type arguments.** `new Map<string, number>()` came
+   out as `Map< string >`, because the printed type was re-parsed with a
+   regex that stopped at the first comma. Checker types are now mapped
+   structurally (unions, intersections, aliases, enums, generic references),
+   so type arguments and qualified names survive:
+   `Map< string, number >`, `Set< Promise< string > >`,
+   `Map< string, src::shapes::Circle >`. The remaining text fallback got a
+   nesting-aware splitter as well.
+4. **`GENERATE_XML = YES`** in `Doxyfile.sample`, with `XML_PROGRAMLISTING`
+   and a note that the embedded listing is the original TypeScript.
+5. **Working rules** in this file now say to stop for approval after each
+   phase.
+
+New fixtures: `test/fixtures/src/overloads.ts` (method and constructor
+overloads, an ambient `declare class`) and `inference.ts` (annotation-free
+declarations whose types come from the checker).
+
+Results after the fixes (`npm test`): **229 checks passed, 0 failed**;
+Doxygen still runs with an empty warning log.
+
 ## Phase 2 — JSDoc/TSDoc conversion: not started
+
+*Waiting for review approval before starting.*
 
 ## Phase 3 — call graphs: not started
 
