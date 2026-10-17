@@ -22,11 +22,16 @@ import { Circle } from './shapes';
  * an unresolvable {@link NotAThingAnywhere} and a URL
  * {@link https://example.com/docs}.
  *
- * @param input the raw label
- * @param maximum maximum length
+ * A labelled URL: {@link https://example.com | the docs} and some inline HTML:
+ * <b>bold</b>, <i>italic</i>, <code>literal</code> and a break<br>after it.
+ *
+ * @param input - the raw label
+ * @param maximum - maximum length
  * @returns the normalized label
  * @throws {RangeError} when `maximum` is negative
  * @deprecated use {@link betterNormalize} instead
+ * @see betterNormalize
+ * @see https://example.com/docs
  * @since 0.2.0
  * @example
  * ```ts
@@ -50,7 +55,7 @@ export function betterNormalize(input: string): string {
 /**
  * Picks the first element.
  *
- * @typeParam T the element type
+ * @typeParam T - the element type
  * @param values the values to pick from
  * @returns the first value, if there is one
  */
@@ -84,9 +89,17 @@ export function rectangleArea({ width, height }: { width: number; height: number
 /**
  * An example without a fenced code block.
  *
+ * It has two paragraphs and a list, all of which must survive:
+ *
+ * - first
+ * - second
+ *
+ * @see Circle
+ *
  * @example
  * const c = describeCircle(new Circle(1));
  * console.log(c);
+ * return c;
  */
 export function describeCircle(circle: Circle): string {
   return `circle of area ${circle.area()}`;

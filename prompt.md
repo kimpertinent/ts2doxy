@@ -240,6 +240,43 @@ Also fixed on the way: `Doc` entries are split on newlines, because the canvas
 budgets space by counting entries — an entry containing a newline made it
 under-count the lines a comment block needs.
 
+### Phase 2 review fixes: done
+
+1. **Comments were collapsed although there was room.** The converted comment
+   is usually longer than the original (`@example` gains `@code`/`@endcode`
+   wrappers, notes about the TypeScript original are appended), and the canvas
+   collapsed the whole block onto one line as soon as it did not fit — losing
+   paragraphs, Markdown lists and, in `describeCircle`, a two-line example
+   that came out as a single `<codeline>`. `Doc` now offers a ladder of
+   renderings and the canvas takes the most faithful one that fits: blank
+   separators go first, then the added notes move onto the last comment line,
+   then the `/**` and `*/` delimiters share lines with the text. Collapsing is
+   the last resort. `describeCircle` now yields **3 `<codeline>`s, 1
+   `<itemizedlist>` with 2 `<listitem>`s and 8 `<para>`s**; new tests assert
+   those counts in the XML.
+2. **`@see https://example.com/docs` lost its scheme.** TypeScript parses the
+   argument of `@see` into `tag.name` plus `tag.comment` and splits a URL
+   between them (`name = "https"`, comment = `"://example.com/docs"`); only
+   the comment was read. Both halves are now rejoined before anything looks
+   at them. Two further `@see` bugs came out of the same fixture: `@see Name`
+   was **dropped entirely** (its text lives in `tag.name`, which was never
+   read — `@see` had no fixture coverage in phase 2), and TypeScript hands
+   over the leading `*` of the next comment line as the tag's description,
+   which was being printed.
+3. **`{@link https://example.com | Docs}`** now becomes the Markdown link
+   `[Docs](https://example.com)`, which Doxygen renders as
+   `<ulink url="https://example.com">the docs</ulink>`.
+4. **Inline HTML was escaped.** Escaping now skips the HTML tags Doxygen
+   supports and HTML entities, so `<b>`, `<i>`, `<code>` and `<br>` render as
+   markup (`<bold>`, `<emphasis>`, `<computeroutput>`, `<linebreak/>` in the
+   XML) while `Array<T>` in prose stays escaped text.
+5. **TSDoc `@param name - description`** keeps the hyphen no longer; it is the
+   separator between name and description, not part of it. Same for
+   `@typeParam T - description`.
+
+Results (`npm test`): **337 checks passed, 0 failed**; Doxygen's warning log
+still empty and declaration line numbers still exact.
+
 ## Phase 3 — call graphs: not started
 
 *Waiting for review approval before starting.*

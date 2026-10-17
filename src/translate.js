@@ -187,7 +187,7 @@ class Translator {
     });
     const template = this.templatePrefix(node);
     const code = `${template}class ${name}${bases.length ? ` : ${bases.join(', ')}` : ''} {`;
-    this.canvas.put(this.anchorOf(node), code, doc.render());
+    this.canvas.put(this.anchorOf(node), code, doc);
 
     this.emitMembers(node, { name, isInterface, abstract });
     this.canvas.put(this.endLineOf(node), '};', null, { shared: true });
@@ -268,7 +268,7 @@ class Translator {
     this.canvas.put(
       this.anchorOf(node),
       `${prefix}${info.name}(${params})${body.open}`,
-      doc.render(),
+      doc,
     );
     this.closeBody(node, body);
     this.stats.methods++;
@@ -294,7 +294,7 @@ class Translator {
     this.canvas.put(
       this.anchorOf(p),
       `${accessOf(p)}: ${konst}${type} ${name};`,
-      doc.render(),
+      doc,
       { shared: true },
     );
     this.stats.fields++;
@@ -333,7 +333,7 @@ class Translator {
     this.canvas.put(
       this.anchorOf(node),
       `${prefix}${template}${specifiers.join(' ')}${specifiers.length ? ' ' : ''}${ret} ${name}(${params})${body.open}`,
-      doc.render(),
+      doc,
     );
     if (!isAbstract && node.body) this.closeBody(node, body);
     this.stats.methods++;
@@ -360,7 +360,7 @@ class Translator {
     this.canvas.put(
       this.anchorOf(node),
       `${prefix}${specifiers.join(' ')}${specifiers.length ? ' ' : ''}${type} ${name}${init ? ` = ${init}` : ''};`,
-      doc.render(),
+      doc,
     );
     this.stats.fields++;
     return undefined;
@@ -384,7 +384,7 @@ class Translator {
     this.canvas.put(
       this.anchorOf(node),
       `${prefix}${specifiers}${ret} ${name}(${params})${body.open}`,
-      doc.render(),
+      doc,
     );
     this.closeBody(fn, body);
     this.stats.methods++;
@@ -414,7 +414,7 @@ class Translator {
     this.canvas.put(
       this.anchorOf(node),
       `${prefix}${specifiers}${ret} ${name}(${params})${body.open}`,
-      doc.render(),
+      doc,
     );
     if (!isAbstract && node.body) this.closeBody(node, body);
     this.stats.methods++;
@@ -426,7 +426,7 @@ class Translator {
     const doc = buildDoc(node, this.ctx, {
       notes: [`@note TypeScript index signature ${escapeInlineCode(typeSourceText(node))}.`],
     });
-    this.canvas.put(this.anchorOf(node), `${prefix}${ret} operator[](${params});`, doc.render());
+    this.canvas.put(this.anchorOf(node), `${prefix}${ret} operator[](${params});`, doc);
     this.stats.methods++;
   }
 
@@ -438,7 +438,7 @@ class Translator {
       paramNames: this.lastParamNames,
       returnsVoid: ret === 'void',
     });
-    this.canvas.put(this.anchorOf(node), `${prefix}${ret} operator()(${params});`, doc.render());
+    this.canvas.put(this.anchorOf(node), `${prefix}${ret} operator()(${params});`, doc);
     this.stats.methods++;
   }
 
@@ -447,7 +447,7 @@ class Translator {
     const doc = buildDoc(node, this.ctx, {
       notes: [`@note TypeScript construct signature ${escapeInlineCode(typeSourceText(node))}.`],
     });
-    this.canvas.put(this.anchorOf(node), `${prefix}${info.name}(${params});`, doc.render());
+    this.canvas.put(this.anchorOf(node), `${prefix}${info.name}(${params});`, doc);
     this.stats.methods++;
   }
 
@@ -462,12 +462,12 @@ class Translator {
     const exported = this.exportNote(node, name);
     if (exported) notes.push(exported);
     const doc = buildDoc(node, this.ctx, { notes });
-    this.canvas.put(this.anchorOf(node), `enum class ${name} {`, doc.render());
+    this.canvas.put(this.anchorOf(node), `enum class ${name} {`, doc);
     for (const member of node.members) {
       const mname = nameText(member.name) || 'VALUE';
       const value = literalInitializer(member.initializer);
       const mdoc = buildDoc(member, this.ctx, {});
-      this.canvas.put(this.anchorOf(member), `${mname}${value ? ` = ${value}` : ''},`, mdoc.render());
+      this.canvas.put(this.anchorOf(member), `${mname}${value ? ` = ${value}` : ''},`, mdoc);
     }
     this.canvas.put(this.endLineOf(node), '};', null, { shared: true });
     this.stats.enums++;
@@ -489,7 +489,7 @@ class Translator {
     const code = template
       ? `${template}using ${name} = ${target};`
       : `typedef ${target} ${name};`;
-    this.canvas.put(this.anchorOf(node), code, doc.render());
+    this.canvas.put(this.anchorOf(node), code, doc);
     this.stats.typedefs++;
   }
 
@@ -518,7 +518,7 @@ class Translator {
     this.canvas.put(
       this.anchorOf(node),
       `${template}${ret} ${name}(${params})${body.open}`,
-      doc.render(),
+      doc,
     );
     if (hasBody) this.closeBody(node, body);
     this.stats.functions++;
@@ -550,7 +550,7 @@ class Translator {
       this.canvas.put(
         this.anchorOf(decl),
         `${isConst ? 'const ' : ''}${type} ${name}${value ? ` = ${value}` : ''};`,
-        doc.render(),
+        doc,
       );
       this.stats.variables++;
     }
@@ -577,7 +577,7 @@ class Translator {
     this.canvas.put(
       this.anchorOf(decl),
       `${template}${ret} ${name}(${params})${body.open}`,
-      doc.render(),
+      doc,
     );
     this.closeBody(fn, body);
     this.stats.functions++;
@@ -590,7 +590,7 @@ class Translator {
         ? `@note TypeScript ambient module declaration ${escapeInlineCode(node.name.text)}.`
         : '@note TypeScript `namespace` declaration.'],
     });
-    this.canvas.put(this.anchorOf(node), `namespace ${name} {`, doc.render());
+    this.canvas.put(this.anchorOf(node), `namespace ${name} {`, doc);
     if (node.body && ts.isModuleBlock(node.body)) {
       this.emitStatements(node.body.statements);
     } else if (node.body && ts.isModuleDeclaration(node.body)) {

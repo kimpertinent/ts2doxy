@@ -91,6 +91,30 @@ function findFileComment(sourceFile) {
  * comment bodies
  * -------------------------------------------------------------------- */
 
+/**
+ * Reassemble a URL that TypeScript split in two.
+ *
+ * `{@link https://example.com | Docs}` and `@see https://example.com` are
+ * parsed as the identifier `https` followed by the text `://example.com ...`,
+ * so the scheme arrives separately from the rest and has to be glued back on
+ * before anything can recognise it as a URL.
+ *
+ * @returns `{url, label}`, or null when this is not a URL reference.
+ */
+function splitUrlReference(written, text) {
+  const joined = `${written || ''}${text || ''}`.trim();
+  const match = /^((?:https?|ftp|mailto):[^\s|]+)\s*(?:\|\s*([\s\S]*))?$/.exec(joined);
+  if (!match) return null;
+  return { url: match[1], label: (match[2] || '').trim() };
+}
+
+/** A URL, with a label when one was given, as Doxygen-ready Markdown. */
+function renderUrl({ url, label }) {
+  if (!label) return url;
+  const text = escapeText(label).replace(/[[\]]/g, '');
+  return `[${text}](${url})`;
+}
+
 function isLinkLike(part) {
   return part.kind === ts.SyntaxKind.JSDocLink
     || part.kind === ts.SyntaxKind.JSDocLinkCode
@@ -122,11 +146,9 @@ function resolveLinkTarget(nameNode, ctx) {
 function renderLink(part, ctx) {
   const nameNode = part.name;
   const written = nameNode && nameNode.getText ? nameNode.getText() : '';
+  const url = splitUrlReference(written, part.text);
+  if (url) return renderUrl(url);
   let label = String(part.text || '').trim().replace(/^\|\s*/, '').trim();
-  // A URL is parsed as the identifier `https` followed by `://...`; put it
-  // back together and let Doxygen auto-link it.
-  const rejoined = `${written}${String(part.text || '').trim()}`;
-  if (/^(https?|ftp|mailto):/.test(rejoined)) return rejoined;
   const target = resolveLinkTarget(nameNode, ctx);
   if (target) {
     return label && label !== written
@@ -162,6 +184,16 @@ function renderComment(comment, ctx) {
 /** One-line rendering of a comment body, for use as a command argument. */
 function renderCommentInline(comment, ctx) {
   return renderComment(comment, ctx).map((l) => l.trim()).filter(Boolean).join(' ');
+}
+
+/**
+ * Drop the separator of the TSDoc form `@param name - description`.
+ *
+ * TSDoc writes the hyphen as punctuation between the name and the
+ * description, so it is not part of the description itself.
+ */
+function stripTsdocSeparator(text) {
+  return String(text || '').replace(/^[-\u2013\u2014]\s+/, '');
 }
 
 /** Unescaped comment text, for bodies that end up inside `@code`. */
@@ -228,19 +260,42 @@ function renderExample(tag) {
 /**
  * `@see` targets.
  *
- * Doxygen tries to resolve the argument of `@see` and warns when it cannot, so
- * a bare name is only passed through when the checker resolved it in the
- * comment's own scope; otherwise it becomes a plain "See also" paragraph.
+ * TypeScript parses the argument into `tag.name` (a name reference) plus
+ * `tag.comment`, and splits a URL between the two, so both halves have to be
+ * considered. Doxygen resolves the argument of `@see` as a reference and warns
+ * when it cannot, so a name is only passed through once the checker has
+ * resolved it; anything else becomes a "See also" note.
  */
 function renderSee(tag, ctx, doc) {
-  const body = renderCommentInline(tag.comment, ctx);
+  const written = tag.name && tag.name.getText ? tag.name.getText() : '';
+  // After `@see Name` TypeScript hands us the leading `*` of the next comment
+  // line as the tag's description; that is trivia, not text.
+  const isTrivia = (text) => /^[\s*]*$/.test(String(text || ''));
+  const rawRest = isTrivia(rawCommentText(tag.comment)) ? '' : rawCommentText(tag.comment);
+  const rest = isTrivia(renderCommentInline(tag.comment, ctx))
+    ? ''
+    : renderCommentInline(tag.comment, ctx);
+
+  const url = splitUrlReference(written, rawRest);
+  if (url) {
+    // A URL is not a reference, so it cannot go through `@see`.
+    doc.addNote(`@note See also: ${renderUrl(url)}`);
+    return;
+  }
+
+  const target = resolveLinkTarget(tag.name, ctx);
+  if (target) {
+    doc.addCommand(`@see ${target}${rest ? ` ${rest}` : ''}`);
+    return;
+  }
+
+  const body = [escapeText(written), rest].filter(Boolean).join(' ').trim();
   if (!body) return;
   if (body.startsWith('@ref ')) {
     doc.addCommand(`@see ${body.slice(5)}`);
     return;
   }
-  const bare = /^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*$/.exec(body);
-  if (bare && tag.comment) {
+  if (/^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*$/.test(body)) {
     const resolved = resolveIdentifierInScope(body, tag, ctx);
     if (resolved) {
       doc.addCommand(`@see ${resolved}`);
@@ -308,7 +363,8 @@ function buildDoc(node, ctx, info = {}) {
           const bare = written.replace(/^\.\.\./, '').replace(/^\[/, '').replace(/\]$/, '');
           const identifier = sanitizeIdentifier(bare, '');
           const optional = !!tag.isBracketed;
-          const text = [body, optional ? '(optional)' : null].filter(Boolean).join(' ');
+          const text = [stripTsdocSeparator(body), optional ? '(optional)' : null]
+            .filter(Boolean).join(' ');
           if (identifier && paramNames.has(identifier)) {
             doc.addCommand(`@param ${identifier} ${text}`.trimEnd());
           } else if (written) {
@@ -362,6 +418,7 @@ function buildDoc(node, ctx, info = {}) {
               [, written, text] = split;
             }
           }
+          text = stripTsdocSeparator(text);
           const identifier = sanitizeIdentifier(written, '');
           if (identifier && typeParamNames.has(identifier)) {
             doc.addCommand(`@tparam ${identifier} ${text}`.trimEnd());
@@ -436,4 +493,6 @@ module.exports = {
   rawCommentText,
   renderComment,
   renderCommentInline,
+  splitUrlReference,
+  stripTsdocSeparator,
 };
