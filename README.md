@@ -66,6 +66,7 @@ FILTER_SOURCE_FILES = NO
 | `BUILTIN_STL_SUPPORT = YES` | TypeScript function types are emitted as `std::function<...>`; this stops Doxygen documenting those as user classes. |
 | `INCLUDE_GRAPH`/`INCLUDED_BY_GRAPH = NO` | No `#include` directives are emitted, so those graphs would always be empty. |
 | `UML_LIMIT_NUM_FIELDS = 0`, `DOT_UML_DETAILS = YES` | Show all members with their types inside the UML boxes. |
+| `GENERATE_XML = YES` | Machine-readable output, for post-processing the extracted model (member lists, protection, locations, call references) with your own tools. |
 
 ### On the command line
 
@@ -101,7 +102,7 @@ Options:
 | `public`/`protected`/`private`/`#private` | `public:` / `protected:` / `private:` sections |
 | generics | `template< typename T, … >`; constraints and defaults go into the doc block |
 | function, and arrow function assigned to a `const` | free function |
-| overloads | one declaration each |
+| overloads | one declaration per overload signature. The implementation signature is not documented: it is not callable, and its parameter types are the union of all overloads. |
 | `enum`, `const enum` | `enum class` |
 | `type` alias | `typedef` (or `template<…> using` when generic); original TS text kept in the doc block |
 | union / intersection | sanitized identifier (`string_or_number`, `A_and_B`); `T \| null` and `T \| undefined` collapse to `T` so that the member still links to `T` |
@@ -114,6 +115,17 @@ Options:
 | constructor parameter property | a constructor parameter **and** a data member |
 | `namespace X {}` | nested `namespace X {}` |
 | default / named exports | `@note` in the doc block |
+
+Every class member is emitted with an explicit access specifier
+(`public:`/`protected:`/`private:`) rather than relying on C++ access sections:
+members with different access can share an output line (a constructor and the
+parameter properties it declares), and a stale section would silently change
+the protection Doxygen reports for everything after it.
+
+Types that are not annotated are taken from the type checker structurally, so
+type arguments and qualified names survive: `private index = new Map<string,
+number>()` becomes `Map< string, number >`, and `new Map<string, Circle>()`
+becomes `Map< string, other::module::Circle >`.
 
 Names that collide with a C++ keyword get a trailing underscore
 (`const double = …` becomes `number double_(…)`), because the output has to go

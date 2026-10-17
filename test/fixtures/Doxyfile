@@ -29,7 +29,7 @@ EXCLUDE_PATTERNS       = */node_modules/* \
                          */build/* \
                          */coverage/* \
                          *.min.js \
-                         
+                         *.unused
 
 EXCLUDE_SYMLINKS       = YES
 
@@ -144,9 +144,6 @@ GROUP_GRAPHS           = YES
 TEMPLATE_RELATIONS     = YES
 DIRECTORY_GRAPH        = YES
 
-# Textual inheritance lists in addition to the graphs.
-INHERITANCE_GRAPH      = YES
-
 # ts2doxy emits no `#include` directives, so these two would always be empty.
 INCLUDE_GRAPH          = NO
 INCLUDED_BY_GRAPH      = NO
@@ -178,7 +175,14 @@ HTML_DYNAMIC_SECTIONS  = YES
 SEARCHENGINE           = YES
 
 GENERATE_LATEX         = NO
+
+# Machine-readable output, for post-processing the extracted model (member
+# lists, protection, locations, call references) with your own tools.
 GENERATE_XML           = YES
+XML_OUTPUT             = xml
+# Embeds the input listing in the XML. With FILTER_SOURCE_FILES = NO that is
+# the original TypeScript, not the generated pseudo-code.
+XML_PROGRAMLISTING     = YES
 
 # ---------------------------------------------------------------------------
 # Warnings

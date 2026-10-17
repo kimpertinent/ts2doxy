@@ -62,6 +62,8 @@ const types = outputs.get('types.ts');
 const functions = outputs.get('functions.ts');
 const app = outputs.get('app.ts');
 const legacy = outputs.get('legacy.js');
+const overloads = outputs.get('overloads.ts');
+const inference = outputs.get('inference.ts');
 
 // namespaces derived from the file path
 contains('module -> namespace', shapes, 'namespace src { namespace shapes {');
@@ -137,6 +139,44 @@ contains('generator noted', functions, '@note Generator function.');
 contains('named export noted', functions, 'Exported as named export `identity`');
 contains('default export noted', functions, '@note Default export of this module.');
 contains('re-export noted', functions, 'Exported as named export `helper`');
+
+// overloads: signatures are declarations, never pure virtual, and the
+// implementation signature is not part of the documented API
+contains('overload signature not pure virtual', overloads,
+  'public: virtual string format(number value);');
+contains('second overload signature', overloads,
+  'public: virtual string format(boolean value);');
+absent('overload implementation not emitted', overloads, 'number_or_boolean');
+contains('constructor overload signatures', overloads, 'public: Span(number end);');
+contains('parameter property from the implementation', overloads, 'public: number start;');
+contains('ambient method is a plain declaration', overloads,
+  'public: virtual number invoke(string value);');
+absent('ambient method is not pure virtual', overloads, 'invoke(string value) = 0');
+
+// inferred types keep their type arguments and qualified names
+contains('inferred Map keeps both type arguments', inference,
+  'private: Map< string, number > index;');
+contains('inferred nested type arguments', inference,
+  'private: Set< Promise< string > > pending;');
+contains('inferred type argument from another module is qualified', inference,
+  'public: Map< string, src::shapes::Circle > shapes;');
+contains('inferred array type', inference, 'public: const Array< string > tags;');
+contains('inferred enum type is qualified', inference, 'public: src::types::Direction heading');
+contains('inferred return type keeps type arguments', inference,
+  'virtual Map< string, src::shapes::Circle > allShapes();');
+contains('inferred return type of a free function', inference,
+  'src::inference::Store makeStore();');
+
+// every class member carries an explicit access specifier: a stale section
+// would silently change the protection of everything after it
+for (const [file, text] of [['shapes.ts', shapes], ['app.ts', app],
+  ['inference.ts', inference], ['overloads.ts', overloads]]) {
+  const members = text.split('\n')
+    .flatMap((line) => line.split(/(?=\b(?:public|protected|private):)/))
+    .filter((part) => /^\s*(?:static |virtual |const |template)?[A-Za-z_]/.test(part))
+    .filter((part) => /[A-Za-z_][A-Za-z0-9_]*\s*(\(|=|;)/.test(part));
+  check(`${file}: access specifiers are explicit`, members.length > 0);
+}
 
 // JavaScript
 contains('js class', legacy, 'class Cache {');
@@ -217,6 +257,109 @@ if (!haveDoxygen()) {
   const circleLine = sourceLineOf('shapes.ts', /export class Circle/);
   contains(`doxygen: Circle located at shapes.ts:${circleLine}`, circle,
     `line="${circleLine}"`);
+
+  // Protection as Doxygen sees it, against the TypeScript source. The table
+  // is written out by hand from the fixtures on purpose: deriving it with the
+  // same code the emitter uses would not test anything.
+  const EXPECTED_PROTECTION = {
+    'classsrc_1_1shapes_1_1Shape.xml': {
+      area: 'public', name: 'public', scale: 'public',
+    },
+    'classsrc_1_1shapes_1_1AbstractShape.xml': {
+      instances: 'public', id: 'public', factor: 'protected', secret: 'private',
+      AbstractShape: 'public', name: 'public', area: 'public', scale: 'public',
+      currentScale: 'public', reset: 'public', audit: 'private',
+    },
+    'classsrc_1_1shapes_1_1Rectangle.xml': {
+      Rectangle: 'public', width: 'public', height: 'public',
+      area: 'public', draw: 'public',
+    },
+    'classsrc_1_1shapes_1_1Circle.xml': {
+      PI: 'public', Circle: 'public', radius: 'private', area: 'public',
+    },
+    'classsrc_1_1shapes_1_1ShapeBag.xml': {
+      items: 'private', add: 'public', totalArea: 'public', ShapeBag: 'public',
+    },
+    'classsrc_1_1app_1_1Report.xml': {
+      bag: 'private', populate: 'public', totalMillimetres: 'public',
+      resetCounters: 'public', summary: 'public', label: 'public',
+      dynamic: 'public', Report: 'public',
+    },
+    'classsrc_1_1app_1_1DetailedReport.xml': {
+      DetailedReport: 'public', verbose: 'private', describe: 'public',
+    },
+    'classsrc_1_1inference_1_1Store.xml': {
+      index: 'private', pending: 'private', shapes: 'public', tags: 'public',
+      heading: 'public', lookup: 'public', allShapes: 'public', Store: 'public',
+    },
+    'classsrc_1_1overloads_1_1Formatter.xml': {
+      format: 'public', trim: 'public', Formatter: 'public',
+    },
+    'classsrc_1_1overloads_1_1Span.xml': {
+      Span: 'public', start: 'public', end: 'public', width: 'public',
+    },
+    'classsrc_1_1overloads_1_1Native.xml': {
+      invoke: 'public', Native: 'public',
+    },
+  };
+  // `<name>` also appears in cross-reference sections, so only the
+  // `<memberdef>` elements themselves are read.
+  const memberDefs = (xml) => {
+    const out = [];
+    const re = /<memberdef\b([^>]*)>[\s\S]*?<name>([^<]*)<\/name>/g;
+    let match;
+    while ((match = re.exec(xml)) !== null) {
+      const prot = /\bprot="([a-z]+)"/.exec(match[1]);
+      out.push({ name: match[2], prot: prot ? prot[1] : '?' });
+    }
+    return out;
+  };
+  const countMembers = (xml, name) =>
+    memberDefs(xml).filter((m) => m.name === name).length;
+
+  for (const [xmlFile, expected] of Object.entries(EXPECTED_PROTECTION)) {
+    const xml = readXml(xmlFile);
+    const found = new Map();
+    for (const { name: member, prot } of memberDefs(xml)) {
+      if (!found.has(member)) found.set(member, new Set());
+      found.get(member).add(prot);
+    }
+    const cls = xmlFile.replace(/^class|\.xml$/g, '').replace(/_1_1/g, '::');
+    for (const [member, want] of Object.entries(expected)) {
+      const got = found.get(member);
+      check(`doxygen: ${cls}::${member} is ${want}`,
+        got && got.size === 1 && got.has(want),
+        got ? `reported as ${[...got].join('/')}` : 'member missing from the XML');
+    }
+    for (const member of found.keys()) {
+      check(`doxygen: ${cls}::${member} is expected to exist`,
+        Object.prototype.hasOwnProperty.call(expected, member),
+        'member present in the XML but not in the expectation table');
+    }
+  }
+
+  // overload sets: both signatures present, neither abstract, no
+  // implementation signature
+  const formatter = readXml('classsrc_1_1overloads_1_1Formatter.xml');
+  check('doxygen: both format overloads documented',
+    countMembers(formatter, 'format') === 2,
+    `found ${countMembers(formatter, 'format')}`);
+  absent('doxygen: overloads are not pure virtual', formatter, 'virt="pure-virtual"');
+  const native = readXml('classsrc_1_1overloads_1_1Native.xml');
+  absent('doxygen: ambient method is not pure virtual', native, 'virt="pure-virtual"');
+  const span = readXml('classsrc_1_1overloads_1_1Span.xml');
+  check('doxygen: both constructor overloads documented',
+    countMembers(span, 'Span') === 2,
+    `found ${countMembers(span, 'Span')}`);
+  const abstractShape = readXml('classsrc_1_1shapes_1_1AbstractShape.xml');
+  contains('doxygen: abstract member is pure virtual', abstractShape, 'virt="pure-virtual"');
+
+  // inferred types survive the round trip through Doxygen
+  const store = readXml('classsrc_1_1inference_1_1Store.xml');
+  contains('doxygen: inferred Map type arguments kept', store,
+    'Map&lt; string, number &gt;');
+  contains('doxygen: inferred qualified type argument kept', store,
+    'src::shapes::Circle');
 
   // diagrams
   for (const graph of [

@@ -175,7 +175,14 @@ HTML_DYNAMIC_SECTIONS  = YES
 SEARCHENGINE           = YES
 
 GENERATE_LATEX         = NO
-GENERATE_XML           = NO
+
+# Machine-readable output, for post-processing the extracted model (member
+# lists, protection, locations, call references) with your own tools.
+GENERATE_XML           = YES
+XML_OUTPUT             = xml
+# Embeds the input listing in the XML. With FILTER_SOURCE_FILES = NO that is
+# the original TypeScript, not the generated pseudo-code.
+XML_PROGRAMLISTING     = YES
 
 # ---------------------------------------------------------------------------
 # Warnings
