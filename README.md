@@ -20,7 +20,8 @@ browser and every “Definition at line N” is correct.
 ## Requirements
 
 * Node.js ≥ 18
-* Doxygen ≥ 1.9 (developed against 1.9.8)
+* Doxygen ≥ 1.9 — tested against **1.9.8** and **1.18.0**
+  (see [Doxygen versions](#doxygen-versions))
 * Graphviz (`dot`) for the diagrams (developed against 2.43)
 
 The only runtime dependency is the `typescript` package (Apache-2.0); `ts2doxy`
@@ -340,6 +341,66 @@ node test/verify-project.js typeorm/packages/typeorm/src <xml-dir>
 `test/verify-project.js` reads `extends`/`implements` out of the TypeScript
 AST, reads `<basecompoundref>` out of Doxygen's XML and diffs the two, so the
 claim above is checkable on any project rather than taken on trust.
+
+## Doxygen versions
+
+Tested against Doxygen **1.9.8** and **1.18.0**. Both produce the same
+documentation from the same input; the differences below are Doxygen's, and
+`ts2doxy` works around the ones it can.
+
+On the 496-file project used for the measurements above, Doxygen 1.9.8 reports
+7187 call references and invents none; 1.18.0 reports 7779 — the same 7187,
+plus 592 parameter-name collisions (see below). Run the test suite against a
+specific build with `DOXYGEN=/path/to/doxygen npm test`.
+
+### Handled
+
+* **A function outside a class was reported as calling itself.** Doxygen 1.18
+  resolves the name in `void f() { … }` at namespace or file scope to `f`
+  itself, which renders as a false recursion arrow in the call graph; methods
+  are unaffected, and a separate forward declaration does not help. It
+  disappears when the definition names the function with its qualifier, which
+  Doxygen only accepts once it has seen a plain declaration — so a free
+  function is emitted as a declaration followed by
+  `ret ns::name(params) { … }`. The declaration goes on the line *above*, so
+  the definition keeps the function's own source line and the reported line
+  numbers are unchanged; the declaration carries the documentation. The cost
+  is one line of the comment's space (see the note on comment space under
+  Known limitations) and, in densely written files, one more declaration that
+  cannot keep its line. A function with no body of its own — an overload
+  signature or an ambient declaration — gets an empty definition for the same
+  reason.
+* **An unqualified type name matching the enclosing class** was resolved to
+  that class's constructor, drawing a false arrow from every method returning
+  `this`. TypeScript models `this` as a type parameter whose symbol is the
+  class, which printed as the bare class name; it is now always qualified.
+* **An unmatched backtick in a source comment** makes Doxygen 1.18 read the
+  rest of the comment, its `*/` included, as a verbatim block, losing the
+  declaration. Doxygen has no escape for a backtick and does not decode
+  `&#96;` in prose, so a backtick left over after the paired code spans have
+  been taken out is replaced by an apostrophe.
+
+### Not worked around: parameter-name collisions
+
+Doxygen 1.18 turns a parameter whose name matches a documented entity into a
+reference to it: `scale(number factor)` is reported as referencing the field
+`factor`. Nothing is done about this, for two reasons.
+
+The first is that for a TypeScript constructor parameter property the two
+names are the *same name* — `constructor(public width: number)` declares a
+parameter and a field in one breath — so there is no renaming that does not
+misrepresent the code. Renaming ordinary parameters would be no better: they
+are part of the documented API, and the `@param` names would have to be
+renamed with them, leaving the documentation disagreeing with the source on
+every Doxygen version.
+
+The second is that the damage is small: Doxygen leaves data members out of
+call and caller graphs, so these show up only as an extra entry in a
+member's "References" list, never as an arrow in a diagram.
+
+The test suite accounts for them explicitly — it knows which names were
+parameters of which function — and reports how many it discounted, so the
+check still fails on anything else Doxygen adds by itself.
 
 ## Known limitations
 

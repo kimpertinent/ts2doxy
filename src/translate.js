@@ -64,6 +64,8 @@ class Translator {
       // against: any edge Doxygen reports that is not in here was invented by
       // Doxygen, not by the filter.
       edges: [],
+      // Emitted parameter names per function, for the same check.
+      signatures: [],
     };
     this.exports = collectExports(sourceFile);
     this.lineCount = sourceFile.getLineStarts().length;
@@ -189,7 +191,7 @@ class Translator {
     const abstract = !isInterface && hasFlag(node, MF.Abstract);
 
     const previousType = this.ctx.currentTypeName;
-    this.ctx.currentTypeName = name;
+    this.ctx.currentTypeName = this.qualify(name);
     this.lossy = false;
 
     const bases = [];
@@ -321,6 +323,7 @@ class Translator {
       this.declOpts(),
     );
     this.closeBody(node, body);
+    this.recordSignature(`${info.qualified}::${info.name}`);
     this.stats.methods++;
     this.emitParameterProperties(node, info);
   }
@@ -390,6 +393,7 @@ class Translator {
       this.declOpts(),
     );
     if (!isAbstract) this.closeBody(node, body);
+    this.recordSignature(`${info.qualified}::${name}`);
     this.stats.methods++;
   }
 
@@ -443,6 +447,7 @@ class Translator {
       this.declOpts(),
     );
     this.closeBody(fn, body);
+    this.recordSignature(`${info.qualified}::${name}`);
     this.stats.methods++;
     return undefined;
   }
@@ -473,6 +478,8 @@ class Translator {
       this.declOpts(),
     );
     if (!isAbstract) this.closeBody(node, body);
+    // A getter has no parameters; a setter's are recorded for the edge check.
+    this.recordSignature(`${info.qualified}::${name}`, isGetter ? [] : undefined);
     this.stats.methods++;
   }
 
@@ -483,6 +490,7 @@ class Translator {
       notes: [`@note TypeScript index signature ${escapeInlineCode(typeSourceText(node))}.`],
     });
     this.canvas.put(this.anchorOf(node), `${prefix}${ret} operator[](${params});`, doc, this.declOpts());
+    this.recordSignature(`${info.qualified}::operator[]`);
     this.stats.methods++;
   }
 
@@ -495,6 +503,7 @@ class Translator {
       returnsVoid: ret === 'void',
     });
     this.canvas.put(this.anchorOf(node), `${prefix}${ret} operator()(${params});`, doc, this.declOpts());
+    this.recordSignature(`${info.qualified}::operator()`);
     this.stats.methods++;
   }
 
@@ -504,6 +513,7 @@ class Translator {
       notes: [`@note TypeScript construct signature ${escapeInlineCode(typeSourceText(node))}.`],
     });
     this.canvas.put(this.anchorOf(node), `${prefix}${info.name}(${params});`, doc, this.declOpts());
+    this.recordSignature(`${info.qualified}::${info.name}`);
     this.stats.methods++;
   }
 
@@ -571,14 +581,20 @@ class Translator {
     });
     const template = this.templatePrefix(node);
     const bodyNode = this.bodySource.get(node) || node;
-    const body = this.bodyFor(bodyNode, this.qualify(name));
-    this.canvas.put(
-      this.anchorOf(node),
-      `${template}${ret} ${name}(${params})${body.open}`,
+    const anchor = this.anchorOf(node);
+    const body = this.bodyFor(bodyNode, this.qualify(name), {
+      alwaysBody: true,
+      endLine: anchor,
+    });
+    this.emitFreeFunction({
+      anchor,
+      signature: `${template}${ret} ${name}(${params})`,
+      qualifiedSignature: `${template}${ret} ${this.qualifiedEmitName(name)}(${params})`,
       doc,
-      this.declOpts(),
-    );
-    this.closeBody(node, body);
+      body,
+      bodyNode: body.node ? bodyNode : node,
+    });
+    this.recordSignature(this.qualify(name));
     this.stats.functions++;
   }
 
@@ -631,14 +647,20 @@ class Translator {
       returnsVoid: ret === 'void',
     });
     const template = this.templatePrefix(fn);
-    const body = this.bodyFor(fn, this.qualify(name));
-    this.canvas.put(
-      this.anchorOf(decl),
-      `${template}${ret} ${name}(${params})${body.open}`,
+    const anchor = this.anchorOf(decl);
+    const body = this.bodyFor(fn, this.qualify(name), {
+      alwaysBody: true,
+      endLine: anchor,
+    });
+    this.emitFreeFunction({
+      anchor,
+      signature: `${template}${ret} ${name}(${params})`,
+      qualifiedSignature: `${template}${ret} ${this.qualifiedEmitName(name)}(${params})`,
       doc,
-      this.declOpts(),
-    );
-    this.closeBody(fn, body);
+      body,
+      bodyNode: body.node ? fn : decl,
+    });
+    this.recordSignature(this.qualify(name));
     this.stats.functions++;
   }
 
@@ -666,6 +688,30 @@ class Translator {
    * ------------------------------------------------------------------ */
 
   /**
+   * Emit a function that is not a class member: a declaration on the line
+   * above, then the definition with its name fully qualified.
+   *
+   * Doxygen 1.18 reports every function outside a class as calling itself
+   * (`n::plain -> plain`), which renders as a false recursion arrow in the
+   * call graph. The self-reference disappears when the definition names the
+   * function with its qualifier, which Doxygen only accepts once it has seen
+   * a plain declaration -- without one the namespace is applied twice and the
+   * symbol goes undocumented (`src::app::src::app::run`). Doxygen reports the
+   * *body* line as the definition location, so putting the declaration one
+   * line above leaves the definition on the function's own source line and
+   * the reported line numbers unchanged; the declaration carries the
+   * documentation. Verified identical on Doxygen 1.9.8 and 1.18.0.
+   *
+   * Class members are unaffected by the 1.18 behaviour and are emitted
+   * directly.
+   */
+  emitFreeFunction({ anchor, signature, qualifiedSignature, doc, body, bodyNode }) {
+    this.canvas.put(anchor - 1, `${signature};`, doc, this.declOpts());
+    this.canvas.put(anchor, `${qualifiedSignature}${body.open}`, null, this.declOpts());
+    this.closeBody(bodyNode, body);
+  }
+
+  /**
    * Open a function body holding the calls it makes, which is what Doxygen
    * reads to build call and caller graphs.
    *
@@ -674,9 +720,14 @@ class Translator {
    * @param name qualified name of the function being emitted, so self-calls
    *        can be counted separately
    */
-  bodyFor(node, name) {
+  bodyFor(node, name, options = {}) {
     if (this.opts.emitBodies === false || !node || !node.body) {
-      return { open: ';', calls: null, node: null };
+      // A free function with nothing to put in its body still gets an empty
+      // one: a bare declaration outside a class is reported as calling itself
+      // by Doxygen 1.18 (see emitFreeFunction).
+      return options.alwaysBody
+        ? { open: ' {', calls: [], node, emptyAt: options.endLine }
+        : { open: ';', calls: null, node: null };
     }
     const ctx = { ...this.ctx, currentFunctionName: name };
     const { calls, stats, unresolved } = extractCalls(node, ctx, {
@@ -698,6 +749,11 @@ class Translator {
   /** Emit the call statements and the closing brace of a body. */
   closeBody(node, body) {
     if (!body || !body.calls) return;
+    if (!body.node) {
+      // An empty body for a declaration that has none of its own.
+      this.canvas.put(body.emptyAt || this.endLineOf(node), '}', null, { shared: true });
+      return;
+    }
     for (const call of body.calls) {
       this.canvas.put(call.line, `${call.name}();`, null, { shared: true });
     }
@@ -728,6 +784,33 @@ class Translator {
   /** Qualified name of something declared in the current scope. */
   qualify(name) {
     return [...(this.namespaceSegments || []), ...this.scopeStack, name].join('::');
+  }
+
+  /**
+   * The name to write in a free function's definition.
+   *
+   * It has to carry a qualifier for Doxygen 1.18 not to report the function
+   * as calling itself; with `--namespace-mode none` there is no namespace to
+   * qualify with, so the global-scope form `::name` is used instead (both
+   * forms verified on 1.9.8 and 1.18.0).
+   */
+  qualifiedEmitName(name) {
+    const qualified = this.qualify(name);
+    return qualified === name ? `::${name}` : qualified;
+  }
+
+  /**
+   * Record a function's emitted parameter names.
+   *
+   * Doxygen 1.18 turns a parameter whose name matches a documented entity
+   * into a reference to it, so the edge check needs to know which names were
+   * parameters. See the README's Doxygen version notes.
+   */
+  recordSignature(qualifiedName, params) {
+    this.stats.signatures.push({
+      name: qualifiedName,
+      params: params || [...(this.lastParamNames || [])],
+    });
   }
 
   anonymousName(node) {

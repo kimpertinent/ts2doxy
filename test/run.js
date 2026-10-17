@@ -87,7 +87,7 @@ const EXPECTED_DRIFT = {
   // Span's second parameter property, same reason
   'overloads.ts': 1,
   // written on purpose with several declarations per line
-  'compact.ts': 12,
+  'compact.ts': 13,
   'types.ts': 0,
   'functions.ts': 0,
   'inference.ts': 0,
@@ -204,6 +204,30 @@ contains('parameter property from the implementation', overloads, 'public: numbe
 contains('ambient method is a plain declaration', overloads,
   'public: virtual number invoke(string value);');
 absent('ambient method is not pure virtual', overloads, 'invoke(string value) = 0');
+
+/*
+ * A function that is not a class member is emitted as a declaration on the
+ * line above plus a definition that names it with its qualifier. Doxygen 1.18
+ * reports an unqualified definition outside a class as calling itself, which
+ * renders as a false recursion arrow; the qualifier removes that, and keeping
+ * the definition on the function's own line keeps the reported line numbers.
+ */
+contains('free function declared before its definition', functions, 'string describe();');
+contains('free function defined with a qualified name', functions,
+  'string src::functions::describe() {');
+contains('generic free function keeps its template prefix', functions,
+  'template< typename T > T src::functions::identity(T value) {');
+contains('arrow function gets the same treatment', functions,
+  'number src::functions::double_(number value) {');
+contains('overload signature with no body gets an empty definition', functions,
+  'number src::functions::parse(number input) { }');
+contains('function in a TypeScript namespace is qualified through it', types,
+  'number src::types::units::toMillimetres(number inches) {');
+
+// `this` as a return type must be the qualified class name: an unqualified one
+// is read by Doxygen 1.18 as a reference to the class's constructor.
+contains('this-returning method uses the qualified class name', shapes,
+  'virtual src::shapes::ShapeBag chain() {');
 
 // inferred types keep their type arguments and qualified names
 contains('inferred Map keeps both type arguments', inference,
@@ -505,21 +529,25 @@ for (const [file, patterns] of Object.entries({
  * 2. Doxygen integration
  * ------------------------------------------------------------------ */
 
-function haveDoxygen() {
+/** The Doxygen to test against; `DOXYGEN=/path/to/doxygen npm test` to pick one. */
+const DOXYGEN = process.env.DOXYGEN || 'doxygen';
+
+function doxygenVersion() {
   try {
-    execFileSync('doxygen', ['--version'], { stdio: 'pipe' });
-    return true;
+    return execFileSync(DOXYGEN, ['--version'], { stdio: 'pipe' }).toString().trim();
   } catch {
-    return false;
+    return null;
   }
 }
 
-if (!haveDoxygen()) {
-  process.stderr.write('note: doxygen not found, skipping integration checks\n');
+const doxVersion = doxygenVersion();
+if (!doxVersion) {
+  process.stderr.write(`note: ${DOXYGEN} not found, skipping integration checks\n`);
 } else {
+  process.stderr.write(`note: running the Doxygen checks against ${doxVersion}\n`);
   const out = path.join(FIXTURES, 'doxygen-out');
   fs.rmSync(out, { recursive: true, force: true });
-  execFileSync('doxygen', ['Doxyfile'], { cwd: FIXTURES, stdio: 'pipe' });
+  execFileSync(DOXYGEN, ['Doxyfile'], { cwd: FIXTURES, stdio: 'pipe' });
 
   const warnings = fs.existsSync(path.join(FIXTURES, 'doxygen-warnings.log'))
     ? fs.readFileSync(path.join(FIXTURES, 'doxygen-warnings.log'), 'utf8').trim()
@@ -564,7 +592,8 @@ if (!haveDoxygen()) {
       PI: 'public', Circle: 'public', radius: 'private', area: 'public',
     },
     'classsrc_1_1shapes_1_1ShapeBag.xml': {
-      items: 'private', add: 'public', totalArea: 'public', ShapeBag: 'public',
+      items: 'private', add: 'public', chain: 'public', totalArea: 'public',
+      ShapeBag: 'public',
     },
     'classsrc_1_1app_1_1Report.xml': {
       bag: 'private', populate: 'public', totalMillimetres: 'public',
@@ -786,9 +815,30 @@ if (!haveDoxygen()) {
    */
   {
     const emitted = new Set();
+    const paramsOf = new Map();
     for (const stats of statsByFile.values()) {
       for (const edge of stats.edges || []) emitted.add(`${edge.from} -> ${edge.to}`);
+      for (const signature of stats.signatures || []) {
+        if (!paramsOf.has(signature.name)) paramsOf.set(signature.name, new Set());
+        for (const param of signature.params) paramsOf.get(signature.name).add(param);
+      }
     }
+
+    /*
+     * Doxygen 1.18 turns a parameter whose name matches a documented entity
+     * into a reference to it: `scale(number factor)` is reported as
+     * referencing the field `factor`, and a constructor parameter property
+     * always collides, since TypeScript gives the parameter and the field one
+     * name by construction. These show up in the "References" lists only --
+     * Doxygen leaves data members out of the call graphs -- and the parameter
+     * names cannot be changed without misrepresenting the API, so they are
+     * accounted for here rather than worked around. See the README's Doxygen
+     * version notes.
+     */
+    const isParameterNameCollision = (caller, target) => {
+      const params = paramsOf.get(caller);
+      return !!params && params.has(String(target).split('::').pop());
+    };
 
     // refid -> qualified name, over every compound Doxygen wrote
     const qualifiedById = new Map();
@@ -811,6 +861,7 @@ if (!haveDoxygen()) {
     }
 
     const spurious = [];
+    const parameterCollisions = [];
     const seenEdges = new Set();
     for (const { qualified, block } of memberBlocks) {
       for (const ref of block.matchAll(/<references\b([^>]*)>([^<]*)<\/references>/g)) {
@@ -818,11 +869,26 @@ if (!haveDoxygen()) {
         const target = refid ? qualifiedById.get(refid[1]) : null;
         const edge = `${qualified} -> ${target || ref[2]}`;
         seenEdges.add(edge);
-        if (!emitted.has(edge)) spurious.push(edge);
+        if (emitted.has(edge)) continue;
+        if (isParameterNameCollision(qualified, target || ref[2])) {
+          parameterCollisions.push(edge);
+          continue;
+        }
+        spurious.push(edge);
       }
     }
 
-    check(`doxygen: no call edges beyond the ${emitted.size} the filter emitted`,
+    if (parameterCollisions.length) {
+      process.stderr.write(
+        `note: ${parameterCollisions.length} edge(s) accounted for as Doxygen 1.18`
+        + ' parameter-name collisions, e.g. '
+        + `${parameterCollisions[0]}\n`,
+      );
+    }
+    check(`doxygen: no call edges beyond the ${emitted.size} the filter emitted`
+      + (parameterCollisions.length
+        ? ` (${parameterCollisions.length} parameter-name collision(s) accounted for)`
+        : ''),
       spurious.length === 0,
       `${spurious.length} edge(s) Doxygen added by itself:\n      ${[...new Set(spurious)].slice(0, 12).join('\n      ')}`);
 

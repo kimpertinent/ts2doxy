@@ -69,6 +69,10 @@ Acceptance criteria:
 - Work in phases: (1) declarations + inheritance diagrams, (2) JSDoc conversion, (3) call graphs, (4) performance / pre-generation mode. Show results after each phase.
 - After each phase, stop and wait for my approval before starting the next one.
 - Ask before deviating from this plan or adding features not listed here.
+- Commit as `Kimpertinent <kimpertinent13@gmail.com>`; set it per repository with
+  `git config user.name "Kimpertinent"` and
+  `git config user.email "kimpertinent13@gmail.com"` before committing, and use
+  it for every commit. Work directly on `main` and push to `main`.
 
 ---
 

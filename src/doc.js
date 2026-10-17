@@ -40,7 +40,13 @@ function escapeText(text) {
   const parts = String(text).split(/(```[\s\S]*?```|`[^`]*`)/g);
   return parts
     .map((part, i) => {
-      if (i % 2 === 0) return escapeProse(part);
+      // A backtick left over after the paired spans were taken out opens a
+      // code span that is never closed. Doxygen 1.18 then reads the rest of
+      // the comment -- its `*\/` included -- as verbatim text and loses the
+      // declaration; 1.9.8 only mis-renders it. Doxygen has no escape for a
+      // backtick and does not decode `&#96;` in prose, so the character is
+      // replaced by an apostrophe.
+      if (i % 2 === 0) return escapeProse(part).replace(/`/g, "'");
       // Fenced blocks are left as they are: Doxygen turns them into a code
       // block. A single-backtick span becomes `<tt>` instead, because
       // Doxygen's own handling of those is fragile -- an apostrophe in the

@@ -115,6 +115,12 @@ export class ShapeBag<T extends Shape> {
     this.items.push(item);
   }
 
+  /** Returns itself, so calls can be chained. */
+  chain(): this {
+    this.add(this.items[0]);
+    return this;
+  }
+
   /** Total area of every item in the bag. */
   totalArea(): number {
     let sum = 0;

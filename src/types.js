@@ -163,6 +163,11 @@ function mapTypeNode(node, ctx) {
       return mapTypeNode(node.type, ctx);
 
     case ts.SyntaxKind.ThisType:
+      // The *qualified* class name. An unqualified one that matches the
+      // enclosing class is resolved by Doxygen 1.18 as a reference to its
+      // constructor, which renders as a false call-graph arrow from every
+      // `this`-returning method -- and a qualified name links across files
+      // anyway.
       return ctx.currentTypeName || 'This';
 
     case ts.SyntaxKind.LiteralType: {
@@ -404,6 +409,15 @@ function headNameOf(type) {
  */
 function mapCheckerType(type, node, ctx, fallback = 'auto') {
   if (!type) return fallback;
+
+  // TypeScript models the `this` type as a type parameter whose symbol is the
+  // class, so without this it would print as the bare class name -- which
+  // Doxygen 1.18 resolves to that class's own constructor, drawing a false
+  // call-graph arrow from every method that returns `this`.
+  if (type.flags & ts.TypeFlags.TypeParameter) {
+    const qualified = qualifyTypeSymbol(type, ctx);
+    if (qualified) return qualified;
+  }
 
   const primitive = primitiveTypeName(type);
   if (type.flags & ts.TypeFlags.EnumLike) {
