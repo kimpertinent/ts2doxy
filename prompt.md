@@ -178,7 +178,69 @@ declarations whose types come from the checker).
 Results after the fixes (`npm test`): **229 checks passed, 0 failed**;
 Doxygen still runs with an empty warning log.
 
-## Phase 2 — JSDoc/TSDoc conversion: not started
+Phase 1 approved at review. For overloads the **last-overload approach** is
+approved: in phase 3 the extracted call body will be attached to the last
+overload signature, keeping the documented API as written while preserving the
+call edges. The unfinished phase-2 draft that existed at review time was
+pushed to the branch `wip-phase2` for safekeeping.
+
+## Phase 2 — JSDoc/TSDoc conversion: done
+
+`src/jsdoc.js` converts comments; `src/doc.js` assembles and escapes the
+blocks. Two rules drive it: nothing may provoke a Doxygen warning (a warning
+caused by the filter is a bug), and nothing may be dropped silently (tags
+without a Doxygen counterpart become `@note`s).
+
+Converted: `@param`, `@returns`/`@return`, `@throws`/`@exception`,
+`@deprecated`, `@see`, `@since`, `@example` → `@code{.js} … @endcode`,
+`@typeParam` → `@tparam`, `@remarks`, `@defaultValue`, `@internal`, `@group`,
+the pass-through set (`@author`, `@version`, `@copyright`, `@date`, `@todo`,
+`@warning`, `@note`), and `{@link}`/`{@linkcode}`/`{@linkplain}` →
+`@ref <qualified name>` resolved through the type checker. Tags the generated
+declaration already expresses (`@type`, `@abstract`, `@static`, …) are
+dropped; anything else becomes a `@note`. Markdown survives; Doxygen-special
+characters are escaped in prose but left verbatim in code spans and fences.
+
+Results (`npm test`): **305 checks passed, 0 failed**, Doxygen's warning log
+still empty. Verified in Doxygen's XML that the conversions actually resolve:
+`{@link Circle}` → `<ref refid="classsrc_1_1shapes_1_1Circle">`,
+`{@link Circle.area | the area method}` → a member ref with that label,
+`@param` → `<parameterlist kind="param">`, `@throws RangeError` →
+`<parameterlist kind="exception">` with `RangeError` as the exception object,
+`@deprecated` → `<xreftitle>Deprecated</xreftitle>`, `@since` →
+`<simplesect kind="since">`, `@typeParam` →
+`<parameterlist kind="templateparam">`, `@example` →
+`<programlisting filename=".js">`, Markdown list → `<itemizedlist>`.
+
+New fixture `test/fixtures/src/docs.ts` covers every tag plus the inline-link
+forms that must *not* become references.
+
+Four things the task did not anticipate, found by running Doxygen rather than
+by reading its documentation:
+
+1. **`@par <title>` takes the rest of the line as its title**, and a command
+   inside a title is rejected ("Illegal command @note found as part of a title
+   section"). This only showed up when a comment had to be collapsed onto one
+   line to fit above its declaration. Collapsing now demotes a `@par` heading
+   to plain text, and the "parameters not in the signature" list became a
+   single `@note` rather than a `@par` list, so a collapsed `@return`
+   description can no longer swallow it.
+2. **An unresolvable `\ref` is a warning.** `{@link}` targets are resolved
+   through the type checker first and only emitted as `@ref` when they name a
+   declaration we translate; the rest become inline code or a plain URL. Same
+   reasoning for `@see` (unresolvable → note) and `@param` (a name that is not
+   in the emitted signature → note).
+3. **`@returns` on a `void` function** is rejected, so it becomes a note.
+4. **`AUTOLINK_SUPPORT` links generated boilerplate.** The word "Documented"
+   in a generated note turned into a link to the fixture's `Documented` class.
+   The leading word of every generated note now carries a `%` prefix, which
+   suppresses that.
+
+Also fixed on the way: `Doc` entries are split on newlines, because the canvas
+budgets space by counting entries — an entry containing a newline made it
+under-count the lines a comment block needs.
+
+## Phase 3 — call graphs: not started
 
 *Waiting for review approval before starting.*
 
