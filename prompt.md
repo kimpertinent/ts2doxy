@@ -277,9 +277,22 @@ under-count the lines a comment block needs.
 Results (`npm test`): **337 checks passed, 0 failed**; Doxygen's warning log
 still empty and declaration line numbers still exact.
 
-## Phase 3 — call graphs: not started
+### Phase 2 second review fixes: done
 
-*Waiting for review approval before starting.*
+1. `@see {@link X | label}` kept the `@ref` out of the output, leaving
+   `@see ns::X "label"` — Doxygen printed the label as text next to the name.
+   The `@ref` is now kept (`@see @ref ns::X "label"`), which renders as a
+   link carrying the label.
+2. `@see <URL>` now goes into the "See also" section rather than a note.
+   Checked against Doxygen first: a bare URL, a Markdown link and
+   `@see @ref x "label"` are all accepted there without warnings. A labelled
+   URL written as `@see {@link https://… | label}` lands there too; that form
+   needed a fix in the raw-text reassembly, which was inserting a space
+   between the `https` scheme and the rest.
+
+Still **0 Doxygen warnings**; `npm test`: **343 checks passed, 0 failed**.
+
+## Phase 3 — call graphs: not started
 
 ## Phase 3 — call graphs: not started
 

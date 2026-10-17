@@ -204,7 +204,10 @@ function rawCommentText(comment) {
     if (part.kind === ts.SyntaxKind.JSDocText) return part.text;
     if (isLinkLike(part)) {
       const written = part.name && part.name.getText ? part.name.getText() : '';
-      return [written, String(part.text || '').trim()].filter(Boolean).join(' ');
+      const text = String(part.text || '').trim();
+      // `https` + `://host` is one URL, not a name followed by a description.
+      const separator = /^:\/\//.test(text) ? '' : ' ';
+      return [written, text].filter(Boolean).join(separator);
     }
     return part.text || '';
   }).join('');
@@ -262,9 +265,10 @@ function renderExample(tag) {
  *
  * TypeScript parses the argument into `tag.name` (a name reference) plus
  * `tag.comment`, and splits a URL between the two, so both halves have to be
- * considered. Doxygen resolves the argument of `@see` as a reference and warns
+ * considered. Doxygen resolves a bare name in `@see` as a reference and warns
  * when it cannot, so a name is only passed through once the checker has
- * resolved it; anything else becomes a "See also" note.
+ * resolved it; an unresolvable one becomes a "See also" note instead. URLs and
+ * `@ref`s are fine as they are.
  */
 function renderSee(tag, ctx, doc) {
   const written = tag.name && tag.name.getText ? tag.name.getText() : '';
@@ -278,8 +282,7 @@ function renderSee(tag, ctx, doc) {
 
   const url = splitUrlReference(written, rawRest);
   if (url) {
-    // A URL is not a reference, so it cannot go through `@see`.
-    doc.addNote(`@note See also: ${renderUrl(url)}`);
+    doc.addCommand(`@see ${renderUrl(url)}`);
     return;
   }
 
@@ -292,7 +295,15 @@ function renderSee(tag, ctx, doc) {
   const body = [escapeText(written), rest].filter(Boolean).join(' ').trim();
   if (!body) return;
   if (body.startsWith('@ref ')) {
-    doc.addCommand(`@see ${body.slice(5)}`);
+    // Keep the `@ref`: `@see @ref ns::X "label"` renders as a link carrying
+    // that label, while `@see ns::X "label"` would print the label as text.
+    doc.addCommand(`@see ${body}`);
+    return;
+  }
+  // Already a link: a bare URL or a Markdown link produced by an inline
+  // `{@link}`. Doxygen renders either inside the "See also" section.
+  if (/^(?:https?|ftp|mailto):\S+$/.test(body) || /^\[[^\]]*\]\([^()\s]+\)$/.test(body)) {
+    doc.addCommand(`@see ${body}`);
     return;
   }
   if (/^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*$/.test(body)) {
