@@ -1,9 +1,15 @@
 # ---------------------------------------------------------------------------
 # Sample Doxyfile for documenting a TypeScript / JavaScript project through
-# ts2doxy.  Copy it next to your tsconfig.json, adjust PROJECT_NAME, INPUT and
-# the FILTER_PATTERNS path, then run `doxygen Doxyfile`.
+# ts2doxy.  Copy it next to your tsconfig.json, adjust PROJECT_NAME and INPUT,
+# replace /abs/path/to/ts2doxy in FILTER_PATTERNS below with the path of your
+# ts2doxy clone, then run `doxygen Doxyfile`.
 #
-# Tested with Doxygen 1.9.8 and Graphviz 2.43.
+# ts2doxy is not on npm; it is installed by cloning it and running `npm ci`
+# inside the clone (see the README).  Run `npm install` in the project you are
+# documenting as well, so that the filter's type checker can resolve its
+# imports.
+#
+# Tested with Doxygen 1.9.8 and 1.18.0, and Graphviz 2.43.
 # ---------------------------------------------------------------------------
 
 PROJECT_NAME           = "My TypeScript Project"
@@ -51,23 +57,32 @@ EXTENSION_MAPPING      = ts=C++ \
                          cjs=C++
 
 # Doxygen runs `<filter> <input-file>` and parses the filter's stdout instead
-# of the file.  Use an absolute path, or a path relative to the directory you
-# run doxygen from.  Quote the command when it has arguments.
+# of the file.  Two things are not optional here:
 #
-# If ts2doxy is installed as a dependency of the documented project:
-FILTER_PATTERNS        = *.ts="node ./node_modules/ts2doxy/bin/ts2doxy.js" \
-                         *.tsx="node ./node_modules/ts2doxy/bin/ts2doxy.js" \
-                         *.mts="node ./node_modules/ts2doxy/bin/ts2doxy.js" \
-                         *.cts="node ./node_modules/ts2doxy/bin/ts2doxy.js" \
-                         *.js="node ./node_modules/ts2doxy/bin/ts2doxy.js" \
-                         *.jsx="node ./node_modules/ts2doxy/bin/ts2doxy.js" \
-                         *.mjs="node ./node_modules/ts2doxy/bin/ts2doxy.js" \
-                         *.cjs="node ./node_modules/ts2doxy/bin/ts2doxy.js"
+#   * The command must be QUOTED.  Doxygen splits the value on whitespace, so
+#     `*.ts=node /path/ts2doxy.js` becomes the two items `*.ts=node` and
+#     `/path/ts2doxy.js` -- Doxygen complains about the missing `=` in the
+#     second and runs plain `node` on your TypeScript for the first, which
+#     fails with ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX.
+#   * Use `node` and an ABSOLUTE path to the clone.  Doxygen runs the filter
+#     through /bin/sh, which does not have your interactive shell's PATH.
+#
+# Every extension in FILE_PATTERNS needs an entry here: an extension that is
+# mapped to C++ but not filtered is parsed as raw JavaScript by Doxygen's C++
+# parser, silently producing nonsense.
+FILTER_PATTERNS        = *.ts="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
+                         *.tsx="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
+                         *.mts="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
+                         *.cts="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
+                         *.js="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
+                         *.jsx="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
+                         *.mjs="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
+                         *.cjs="node /abs/path/to/ts2doxy/bin/ts2doxy.js"
 
 # INPUT_FILTER would apply one command to every input file regardless of
 # extension; FILTER_PATTERNS is preferred because it leaves Markdown, images
 # and other inputs untouched.
-# INPUT_FILTER         = "node ./node_modules/ts2doxy/bin/ts2doxy.js"
+# INPUT_FILTER         = "node /abs/path/to/ts2doxy/bin/ts2doxy.js"
 
 # ---------------------------------------------------------------------------
 # Pre-generation mode (for large projects)
@@ -78,7 +93,7 @@ FILTER_PATTERNS        = *.ts="node ./node_modules/ts2doxy/bin/ts2doxy.js" \
 # medium-sized project, i.e. minutes of filtering on every documentation run.
 # Pre-generation pays that once:
 #
-#     ts2doxy pregen src --out doxygen-pregen
+#     node /abs/path/to/ts2doxy/bin/ts2doxy.js pregen src --out doxygen-pregen
 #
 # Then point Doxygen at the generated tree and remove the filter: comment out
 # FILTER_PATTERNS above and use

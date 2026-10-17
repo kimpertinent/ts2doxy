@@ -30,29 +30,63 @@ cross-file inheritance and call resolution possible.
 
 ## Installation
 
+`ts2doxy` is not published on npm, and it cannot be installed as a git
+dependency either:
+
 ```sh
-# inside the project you want to document
 npm install --save-dev ts2doxy
+# npm error 404 Not Found - GET https://registry.npmjs.org/ts2doxy
+
+npm install --save-dev git+https://github.com/kimpertinent/ts2doxy.git
+# npm error code EALLOWGIT
+# npm error Fetching packages of type "git" have been disabled
 ```
 
-Or from a checkout:
+Install it by cloning it. The clone does not have to live inside the project
+you document:
 
 ```sh
 git clone https://github.com/kimpertinent/ts2doxy
-cd ts2doxy && npm install
+cd ts2doxy
+npm ci            # installs the one dependency, `typescript`, from the lockfile
+node bin/ts2doxy.js --help
 ```
+
+Nothing is compiled; `bin/ts2doxy.js` runs straight from the clone. `npm ci` is
+not optional — without it every invocation fails with
+`Cannot find module 'typescript'`.
+
+Then, in the project you want to document, point Doxygen at the clone with an
+**absolute** path, and quote the command:
+
+```
+FILTER_PATTERNS = *.ts="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
+                  *.tsx="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
+                  ...
+```
+
+Both parts matter. Doxygen runs the filter through `/bin/sh`, from the
+directory you start `doxygen` in — not from your interactive shell — so a bare
+`ts2doxy.js` or a relative path that works when you type it may not be found
+there. And an unquoted command is split at the first space, which makes Doxygen
+run plain `node` on your TypeScript. See [Troubleshooting](#troubleshooting).
+
+Run `npm install` once in the project you document as well: `ts2doxy` builds a
+real TypeScript program, so it needs that project's own dependencies and
+`@types/*` packages to resolve imports.
 
 ## Usage
 
 ### As a Doxygen filter
 
-Copy `Doxyfile.sample` into your project, point `INPUT` at your sources and
-run `doxygen`. The three settings that do the work:
+Copy `Doxyfile.sample` into your project, point `INPUT` at your sources, put
+the path of your clone into `FILTER_PATTERNS` and run `doxygen`. The three
+settings that do the work:
 
 ```
 EXTENSION_MAPPING   = ts=C++ tsx=C++ mts=C++ cts=C++ js=C++ jsx=C++ mjs=C++ cjs=C++
 FILE_PATTERNS       = *.ts *.tsx *.mts *.cts *.js *.jsx *.mjs *.cjs
-FILTER_PATTERNS     = *.ts="node ./node_modules/ts2doxy/bin/ts2doxy.js" ...
+FILTER_PATTERNS     = *.ts="node /abs/path/to/ts2doxy/bin/ts2doxy.js" ...
 FILTER_SOURCE_FILES = NO
 ```
 
@@ -73,7 +107,13 @@ FILTER_SOURCE_FILES = NO
 ### On the command line
 
 ```sh
-ts2doxy src/thing.ts                 # print the translation of one file
+node /abs/path/to/ts2doxy/bin/ts2doxy.js src/thing.ts   # translate one file
+```
+
+The rest of this README writes `ts2doxy` as shorthand for
+`node /abs/path/to/ts2doxy/bin/ts2doxy.js`:
+
+```sh
 ts2doxy --stats stats.jsonl src/thing.ts
 ts2doxy report stats.jsonl           # aggregate the collected statistics
 ts2doxy --help
@@ -249,7 +289,7 @@ Add `--stats <file>` to the filter command, run Doxygen, then aggregate:
 
 ```sh
 rm -f ts2doxy-stats.jsonl
-# FILTER_PATTERNS = *.ts="node ./node_modules/ts2doxy/bin/ts2doxy.js --stats ts2doxy-stats.jsonl"
+# FILTER_PATTERNS = *.ts="node /abs/path/to/ts2doxy/bin/ts2doxy.js --stats ts2doxy-stats.jsonl"
 doxygen Doxyfile
 ts2doxy report ts2doxy-stats.jsonl
 ```
@@ -402,6 +442,89 @@ The test suite accounts for them explicitly — it knows which names were
 parameters of which function — and reports how many it discounted, so the
 check still fails on anything else Doxygen adds by itself.
 
+## Troubleshooting
+
+### `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`, and “no equal sign specified for item”
+
+```
+error: Illegal format for option FILTER_PATTERNS, no equal sign ('=') specified
+       for item '/abs/path/to/ts2doxy/bin/ts2doxy.js'
+src/shapes.ts:3
+  constructor(public width: number) {}
+                     ^^^^^^^^^^^^^
+SyntaxError [ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX]: TypeScript parameter property
+is not supported in strip-only mode
+```
+
+The filter command is not quoted. Doxygen splits the value of
+`FILTER_PATTERNS` on whitespace, so
+
+```
+FILTER_PATTERNS = *.ts=node /abs/path/to/ts2doxy/bin/ts2doxy.js
+```
+
+becomes two items: `*.ts=node`, which makes Doxygen run plain `node` on your
+TypeScript file, and the bare path, which has no `=` and produces the first
+error. Node then tries to *execute* the TypeScript, and its strip-only mode
+rejects any syntax it cannot erase (parameter properties, `enum`, `namespace`).
+Quote the command:
+
+```
+FILTER_PATTERNS = *.ts="node /abs/path/to/ts2doxy/bin/ts2doxy.js"
+```
+
+### The filter is not found, although the same command works in your shell
+
+Doxygen starts the filter with `/bin/sh`, not with your interactive shell, and
+with the working directory you started `doxygen` in. `PATH` additions from your
+shell profile, shell functions, and `node_modules/.bin` entries that your
+package manager puts on `PATH` are all absent there, and an executable
+`ts2doxy.js` relying on its shebang may not be found at all. Always write
+`node` plus an absolute path to the clone.
+
+### `Cannot find module 'typescript'`
+
+The clone has no dependencies installed. Run `npm ci` inside the ts2doxy clone
+(not in the documented project). Without it the filter fails on every file;
+by default a failed file is skipped with a warning on stderr, so what you see
+is a documentation build that simply contains nothing.
+
+### `.js` / `.mjs` files come out as garbage, or as classes at global scope
+
+Every extension listed in `FILE_PATTERNS` needs an entry in `FILTER_PATTERNS`
+too. An extension that is mapped to C++ by `EXTENSION_MAPPING` but has no
+filter is read by Doxygen's **C++ parser as raw JavaScript**, which does not
+fail loudly — it just makes something up. For
+
+```js
+export const greet = (name) => `hi ${name}`;
+export class Legacy { run() { return greet('x'); } }
+```
+
+Doxygen reports a class `Legacy` at global scope instead of in the file's
+namespace, a variable `greet` of type `const`, and no call edge from
+`Legacy::run` to `greet`. Keep the three lists in step:
+`FILE_PATTERNS`, `EXTENSION_MAPPING` and `FILTER_PATTERNS` in `Doxyfile.sample`
+all cover `ts tsx mts cts js jsx mjs cjs`.
+
+### The call and caller graphs are empty (or full of self-references)
+
+`SOURCE_BROWSER` must be `YES`. Doxygen only records cross-references while it
+runs the source browser pass, so with `SOURCE_BROWSER = NO` every call
+statement the filter emits is discarded and Doxygen puts self-references in
+their place (on the test fixtures: 35 real edges gone, 25 invented ones).
+`CALL_GRAPH = YES` and `CALLER_GRAPH = YES` alone are not enough.
+
+### Types are unresolved and calls into libraries are missing
+
+Run `npm install` in the project you are documenting. `ts2doxy` builds a real
+TypeScript program with a type checker; if the project's `node_modules` is not
+there, imports do not resolve, member types fall back to sanitized names, and
+calls through them cannot be resolved into edges. Node's own types come from
+`@types/node`, which is part of that install. A missing `tsconfig.json` has the
+same effect for compiler options — pass `--project` if it is not in the usual
+place.
+
 ## Known limitations
 
 * Class fields that only exist as `this.x = …` assignments in a JavaScript
@@ -435,7 +558,7 @@ check still fails on anything else Doxygen adds by itself.
 ## Development
 
 ```sh
-npm install
+npm ci
 npm test            # translation checks + Doxygen integration (if doxygen is on PATH)
 ```
 
