@@ -222,9 +222,15 @@ for (const [file, text] of outputs) {
 // not a reference, so Doxygen would reject it as the argument of @see)
 contains('@see resolvable name -> reference', docs, '@see src::docs::betterNormalize');
 contains('@see a class -> reference', docs, '@see src::shapes::Circle');
-contains('@see URL keeps its scheme', docs, '@note %See also: https://example.com/docs');
+contains('@see {@link X | label} -> labelled reference', docs,
+  '@see @ref src::docs::betterNormalize "the better one"');
+contains('@see URL goes into the see section', docs, '@see https://example.com/docs');
+contains('@see labelled URL', docs, '@see [the docs](https://example.com)');
+contains('@see unresolvable name -> note', docs, '@note %See also: NotAThingAnywhere');
 absent('@see does not lose the URL scheme', docs, 'See also: ://');
 absent('no reference starts with a bare URL path', docs, '@see ://');
+absent('@see keeps the @ref of a labelled link', docs,
+  '@see src::docs::betterNormalize "the better one"');
 absent('@see does not keep comment trivia', docs, '@see src::docs::betterNormalize *');
 
 // labelled URL in {@link}
@@ -488,6 +494,10 @@ if (!haveDoxygen()) {
   contains('doxygen: @see URL kept its scheme', docsXml,
     '<ulink url="https://example.com/docs">https://example.com/docs</ulink>');
   contains('doxygen: @see resolved to a reference', docsXml, '<simplesect kind="see">');
+  contains('doxygen: @see labelled link renders the label', docsXml,
+    'kindref="member">the better one</ref>');
+  contains('doxygen: @see URL is in the see section', docsXml,
+    '<ulink url="https://example.com/docs">https://example.com/docs</ulink>');
   contains('doxygen: <b> became bold', docsXml, '<bold>bold</bold>');
   contains('doxygen: <i> became emphasis', docsXml, '<emphasis>italic</emphasis>');
   contains('doxygen: <code> became computeroutput', docsXml,

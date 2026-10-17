@@ -155,7 +155,7 @@ bold while `Array<T>` in prose stays readable text.
 | `@returns` / `@return` | `@return` (a `@returns` on a `void` function becomes a note, which Doxygen would otherwise reject) |
 | `@throws {Type} desc` / `@exception` | `@throws Type desc` — the type is emitted bare, since Doxygen reads the first token as the exception object |
 | `@deprecated`, `@since`, `@author`, `@version`, `@copyright`, `@date`, `@todo`, `@warning`, `@note` | the same command |
-| `@see Target` | `@see ns::Target` when the checker resolves it. A URL becomes a "See also" note, since Doxygen expects a reference there. |
+| `@see Target` | `@see ns::Target` when the checker resolves it; `@see {@link Target \| label}` becomes `@see @ref ns::Target "label"`, which renders as a link carrying that label. URLs go into the same "See also" section. A name the checker cannot resolve becomes a note, since Doxygen warns about references it cannot resolve. |
 | `@example` | `@par Example` plus `@code{.js} … @endcode`; a Markdown fence inside the example is dropped, because `@code` already delimits the block |
 | `@typeParam T desc` | `@tparam T desc` |
 | `@remarks`, `@description`, `@summary` | an ordinary paragraph |

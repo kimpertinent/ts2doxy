@@ -31,7 +31,10 @@ import { Circle } from './shapes';
  * @throws {RangeError} when `maximum` is negative
  * @deprecated use {@link betterNormalize} instead
  * @see betterNormalize
+ * @see {@link betterNormalize | the better one}
  * @see https://example.com/docs
+ * @see {@link https://example.com | the docs}
+ * @see NotAThingAnywhere
  * @since 0.2.0
  * @example
  * ```ts
