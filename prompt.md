@@ -80,7 +80,7 @@ Acceptance criteria:
 
 ## Environment
 
-Doxygen 1.9.8, Graphviz 2.43.0, Node.js 22, `typescript` 5.9.3 (pinned to 5.x:
+Doxygen 1.9.8 and 1.18.0 (built from source), Graphviz 2.43.0, Node.js 22, `typescript` 5.9.3 (pinned to 5.x:
 the 7.x native port does not expose the full Compiler API used here).
 
 Finding that shaped the design: **Doxygen 1.9.8 ignores `#line` directives in
@@ -296,8 +296,100 @@ still empty and declaration line numbers still exact.
 
 Still **0 Doxygen warnings**; `npm test`: **343 checks passed, 0 failed**.
 
-## Phase 3 — call graphs: not started
+## Phase 3 — call graphs: done
 
-## Phase 3 — call graphs: not started
+`src/calls.js` extracts the calls a function makes; each becomes a fully
+qualified call statement in the emitted body, on the line of the original
+call. Targets are resolved with `getResolvedSignature`, then the symbol of the
+callee expression with import/export aliases followed. Covered: constructor
+calls (`new X()` → `ns::X::X();`), `super()` (also to a synthesized
+constructor), static calls, calls through typed members, calls into TypeScript
+namespaces, generic and interface members, overloads, recursion, and calls
+inside inline callbacks. As approved, the body of an overload set sits on its
+last overload signature.
 
-## Phase 4 — performance / pre-generation mode: not started
+Every call lands in one bucket: resolved (emitted), external (`lib.d.ts` /
+`node_modules`), indirect (resolves to something Doxygen has no node for),
+unresolved, and recursive (counted inside resolved). `--stats` writes
+per-file statistics, `ts2doxy report` aggregates them, `--list-unresolved`
+marks unresolved call sites in the output.
+
+Fixtures: 56 calls, 36 resolved (64.3%), 92.3% of the calls into the
+documented sources; the rest is deliberate (an `any` receiver, a nested
+function, a callback parameter).
+
+### Phase 3 review fixes: done
+
+Doxygen 1.9.8 invents cross-references between declarations that share an
+output line, and merges the bodies of inline members on one line. No
+separator helps and `#line` is ignored, so every declaration now starts its
+own output line (closing braces and call statements still share);
+constructor parameter properties go to the end of the class body. A new edge
+test compares, by refid, every `<references>` in Doxygen's XML with the edges
+the filter wrote, in both directions; the new compact fixture
+(`compact.ts`) made it catch 6 invented edges. `SOURCE_BROWSER = YES` turned
+out to be required (with `NO` all real edges vanish and bogus ones appear);
+documented in README and `Doxyfile.sample`.
+
+## Phase 4 — performance / pre-generation mode: done
+
+Measured first: one filter run is nine tenths fixed cost (199 ms module load,
+345 ms program, 115 ms checker, 89 ms translation), and Doxygen filters each
+file more than once. On TypeORM 1.1.2 (`packages/typeorm/src`, 496 files,
+Doxygen 1.9.8, XML, no dot): per-file filtering 1697 s, `ts2doxy pregen`
+6.1 s + 4 s of Doxygen. `pregen` builds one program for the tree and writes a
+mirror of translated files; its output is byte-identical to per-file mode
+(asserted per fixture). Per-file filtering stays the default because it keeps
+the real TypeScript in the source browser.
+
+Real-project results: 693 classes/interfaces, 413 of 413 inheritance edges
+matching the source (`test/verify-project.js` diffs the TS AST against
+Doxygen's XML), 7255 call references, 57.0% of all call sites resolved and
+92.8% of those into the documented sources. Doxygen warnings went from 78 to
+8, none caused by the translation; the fixes (nested comments in embedded
+source text, backticks replaced by `<tt>`, explicit `@brief`, labelled `@ref`,
+merged duplicate overload signatures, destructured parameter names) are in the
+phase 4 commit and the README.
+
+## Doxygen 1.18.0 support: done
+
+Doxygen 1.18.0 was built from source (tag `Release_1_18_0`) and is selected
+with `DOXYGEN=/path/to/doxygen npm test`. Handled: 1.18 reports every free
+function as calling itself, so a free function is emitted as a declaration on
+the line above plus a qualified definition (`ret ns::name(...) { ... }`) on its
+own line; the `this` type is always qualified (it had produced false edges to
+the class's constructor); an unmatched backtick in a comment is replaced by an
+apostrophe. Not worked around, and documented: 1.18 turns a parameter whose
+name matches a documented entity into a reference (the edge test accounts for
+these). On TypeORM, 1.9.8 reports 7187 call references and invents none; 1.18
+reports the same 7187 plus 592 parameter-name collisions.
+
+## Installation fix: done
+
+`npm install --save-dev ts2doxy` returns 404 (not on npm) and current npm
+refuses git dependencies. README and `Doxyfile.sample` now describe the
+working path: clone, `npm ci` inside the clone, and `FILTER_PATTERNS` pointing
+at the clone with a quoted command and an absolute path. A troubleshooting
+section covers an unquoted filter command (`ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`),
+a filter found only by the interactive shell (Doxygen uses `/bin/sh`),
+`Cannot find module 'typescript'`, unfiltered `.js`/`.mjs` files,
+`SOURCE_BROWSER = NO`, and a documented project without `npm install`.
+
+## Namespace mode `single`: done
+
+`--namespace-mode none` is broken on Doxygen 1.18.0: the global-scope
+definition `void ::upsertSession(...)` is read as a member of a class `void`
+(`void::upsertSession`, `number::countHits`, `Session::findSession` filed
+under the class). Eight spellings were tried; none avoids both this and the
+self-reference. New `--namespace-mode single` puts the whole project into one
+namespace, named after the `name` in the `package.json` next to the tsconfig
+(`@scope/pkg` → `scope_pkg`), else the tsconfig directory name;
+`--namespace-name` overrides it. `none` is unchanged and documented as broken
+on 1.18, with `single` as the recommended alternative. An unknown mode is now
+rejected. Fixture `test/fixtures-modes` runs Doxygen in both modes: `single`
+must give correct names, definition lines and exactly the written calls with
+no warnings; on 1.18 the `none` run asserts the garbled name so a Doxygen
+change gets noticed.
+
+`npm test` against 1.18.0: **488 checks passed, 0 failed**. This round
+(`single` mode and the `none` findings) was verified on Doxygen 1.18.0 only.
