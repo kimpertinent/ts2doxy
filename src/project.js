@@ -11,6 +11,7 @@
 const fs = require('fs');
 const path = require('path');
 const ts = require('typescript');
+const { findConfigFile, findUp, locateConfigFile, startDirectory } = require('./findup');
 const { sanitizeIdentifier } = require('./names');
 
 /** Compiler options that are forced regardless of what the tsconfig says. */
@@ -49,41 +50,18 @@ function fallbackOptions() {
   };
 }
 
-/** Walk up from `startDir` looking for the nearest directory holding `name`. */
-function findUp(startDir, names) {
-  let dir = path.resolve(startDir);
-  for (;;) {
-    for (const name of names) {
-      const candidate = path.join(dir, name);
-      if (fs.existsSync(candidate)) return candidate;
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
-
-/** Walk up from `startDir` looking for the nearest tsconfig.json / jsconfig.json. */
-function findConfigFile(startDir) {
-  return findUp(startDir, ['tsconfig.json', 'jsconfig.json']);
-}
-
 /**
  * Resolve the project context for a file or directory: which tsconfig applies,
  * which compiler options to use and which directory namespaces are relative to.
  */
 function resolveProject(startPath, opts = {}) {
-  const startDir = fs.existsSync(startPath) && fs.statSync(startPath).isDirectory()
-    ? startPath
-    : path.dirname(path.resolve(startPath));
-
-  let configPath = opts.project ? path.resolve(opts.project) : findConfigFile(startDir);
-  if (configPath && fs.existsSync(configPath) && fs.statSync(configPath).isDirectory()) {
-    configPath = path.join(configPath, 'tsconfig.json');
-  }
+  const startDir = startDirectory(startPath);
+  let configPath = locateConfigFile(startPath, opts.project);
 
   let options;
   let fileNames = [];
+  let configFiles = [];
+  let wildcardDirectories = {};
   let configDir = startDir;
   const diagnostics = [];
 
@@ -100,6 +78,12 @@ function resolveProject(startPath, opts = {}) {
     if (parsed) {
       options = { ...parsed.options, ...FORCED_OPTIONS };
       fileNames = parsed.fileNames;
+      // Every config file the options came from, `extends` chain included,
+      // and the directories `include` globs over: what the filter-mode cache
+      // has to watch to notice a changed configuration or file list.
+      configFiles = [path.resolve(configPath),
+        ...((parsed.options.configFile && parsed.options.configFile.extendedSourceFiles) || [])];
+      wildcardDirectories = parsed.wildcardDirectories || {};
       for (const d of parsed.errors || []) diagnostics.push(d);
     }
   }
@@ -119,7 +103,9 @@ function resolveProject(startPath, opts = {}) {
     opts.root || options.rootDir || configDir,
   );
 
-  return { configPath, configDir, options, fileNames, rootDir, diagnostics };
+  return {
+    configPath, configDir, configFiles, options, fileNames, rootDir, wildcardDirectories, diagnostics,
+  };
 }
 
 /**

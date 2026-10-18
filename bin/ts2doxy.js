@@ -75,7 +75,9 @@ function parseArgs(argv) {
         opts.positional.push(arg);
     }
   }
-  const { NAMESPACE_MODES } = require('../src/index');
+  // From names.js, not index.js: index.js loads `typescript`, which a cache
+  // hit must not pay for.
+  const { NAMESPACE_MODES } = require('../src/names');
   if (opts.namespaceMode !== undefined && !NAMESPACE_MODES.includes(opts.namespaceMode)) {
     throw new Error(`unknown namespace mode: ${opts.namespaceMode} (expected ${NAMESPACE_MODES.join(' | ')})`);
   }
@@ -131,9 +133,15 @@ function filterOne(file, opts) {
     warn(opts, `no such file: ${file}`);
     return opts.strict ? 1 : 0;
   }
+  let result = null;
   try {
-    const { filterFile } = require('../src/index');
-    const result = filterFile(target, opts);
+    result = require('../src/cache').lookup(target, opts);
+  } catch (err) {
+    // The cache is an optimization; it must never cost a translation.
+    warn(opts, `cache unavailable, translating directly: ${err && err.message}`);
+  }
+  try {
+    if (!result) result = require('../src/index').filterFile(target, opts);
     process.stdout.write(result.text);
     recordStats(opts, result.stats);
     return 0;

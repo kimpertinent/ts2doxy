@@ -10,10 +10,8 @@
 const path = require('path');
 const ts = require('typescript');
 const { createProgram, defaultNamespaceName, resolveProject } = require('./project');
-const { sanitizeIdentifier } = require('./names');
+const { NAMESPACE_MODES, sanitizeIdentifier } = require('./names');
 const { Translator } = require('./translate');
-
-const NAMESPACE_MODES = ['path', 'flat', 'single', 'none'];
 
 const DEFAULT_OPTIONS = {
   implicitCtors: true,

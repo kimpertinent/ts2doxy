@@ -88,10 +88,13 @@ FILTER_PATTERNS        = *.ts="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
 # Pre-generation mode (for large projects)
 # ---------------------------------------------------------------------------
 #
-# Doxygen runs the filter once per file, and each run has to build a
-# TypeScript program and type checker first -- about 2 s per file on a
-# medium-sized project, i.e. minutes of filtering on every documentation run.
-# Pre-generation pays that once:
+# The filter above is already fast: the first filter run of a Doxygen run
+# translates the whole tsconfig project into a cache (~/.cache/ts2doxy), and
+# every later run only checks that no source changed and prints the cached
+# text, about 40 ms. Nothing needs configuring for that.
+#
+# Pre-generation is faster still, because Doxygen then starts no filter at
+# all:
 #
 #     node /abs/path/to/ts2doxy/bin/ts2doxy.js pregen src --out doxygen-pregen
 #

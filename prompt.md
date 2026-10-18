@@ -393,3 +393,48 @@ change gets noticed.
 
 `npm test` against 1.18.0: **488 checks passed, 0 failed**. This round
 (`single` mode and the `none` findings) was verified on Doxygen 1.18.0 only.
+
+## Filter-mode cache: done (awaiting review)
+
+Goal: filter-mode output (real TypeScript in the source browser,
+`FILTER_SOURCE_FILES = NO`) at roughly pregen speed. Chosen: a cache, not a
+daemon. `src/cache.js`: the first filter run translates every file of the
+tsconfig in one pass (the pregen work) into `$XDG_CACHE_HOME/ts2doxy`
+(default `~/.cache/ts2doxy`), one entry per tsconfig and output options; later
+runs check freshness and print the stored text. On by default, no new
+command-line option.
+
+* Byte-identical to plain filter mode: asserted per fixture through the CLI,
+  in `path` and `single` namespace mode, on the building run and on a hit.
+* Invalidation: size + mtime of every file the compiler read (sources,
+  `.d.ts`, tsconfig and its `extends` chain, the `package.json` next to it,
+  ts2doxy's sources, the typescript version), taken *before* each read; plus
+  the listing of every directory the `include` globs cover, recursively.
+  Tested: edited file, edited dependency only, edited extended config, file
+  newly excluded, new file in a new and in a formerly empty directory,
+  deleted file, touched directory with unchanged listing (still a hit).
+* Parallel runs: `mkdir` lock, generation written completely before an atomic
+  rename of `current`; dead-owner locks are broken. Tested with a held lock
+  (the run waits, then finishes), a dead-owner lock, and 9 parallel runs on a
+  cold cache. Both lock tests were checked by mutation (lock bypassed → they
+  fail).
+* A hit does not load `typescript` (asserted). `crypto` was replaced by a
+  small FNV hash because loading it cost 11 ms of a 40 ms hit; collisions are
+  harmless, every entry stores its full key.
+* Not covered, and documented: files outside the tsconfig's file list and
+  projects without a tsconfig go the plain, slow way.
+
+Measurements (Doxygen 1.18.0 only, fixtures only, `HAVE_DOT = NO`):
+a whole Doxygen run takes 14.0 s with the plain filter, 1.6 s with a cold cache,
+0.9 s warm (18 filter runs for 9 files). Per run: plain 1172 ms, cache hit
+37 ms, of which ~32 ms is node starting a script. A shell prototype of the hit
+path (`cat` + `grep` + `xargs stat` + `cmp` + `cat`, scratch only, not
+committed) took 11 ms. Extrapolated to TypeORM's ~1000 filter runs: ~40 s with
+the node cache, ~17 s with a shell wrapper, ~10 s with pregen. The wrapper
+was **not** built; open questions for review:
+
+1. Shell wrapper for hits (saves ~26 ms per filter run), at the cost of a
+   second freshness implementation in POSIX sh and GNU/BSD `stat`
+   differences?
+2. A switch to turn the cache off, proposed as `--no-cache`, and possibly
+   `--cache-dir <dir>` (today only via `XDG_CACHE_HOME`)?

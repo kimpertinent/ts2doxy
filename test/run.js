@@ -18,11 +18,19 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
+
+// Every filter run below, Doxygen's included, uses the filter-mode cache. Keep
+// it out of the user's ~/.cache and start each test run cold.
+const CACHE_HOME = fs.mkdtempSync(path.join(require('os').tmpdir(), 'ts2doxy-cache-'));
+process.env.XDG_CACHE_HOME = CACHE_HOME;
+process.on('exit', () => fs.rmSync(CACHE_HOME, { recursive: true, force: true }));
 const FIXTURES = path.join(ROOT, 'test', 'fixtures');
 const SRC = path.join(FIXTURES, 'src');
 
 let passed = 0;
 const failures = [];
+/** Checks that finish asynchronously (child processes); awaited before the summary. */
+const pending = [];
 
 function check(name, condition, detail) {
   if (condition) {
@@ -1074,10 +1082,197 @@ if (doxVersion) {
   }
 }
 
+
+/* --- filter-mode cache --- */
+
+{
+  const os = require('os');
+  const { spawn, spawnSync } = require('child_process');
+  const cache = require('../src/cache');
+  const { filterFile } = require('../src/index');
+  const BIN = path.join(ROOT, 'bin', 'ts2doxy.js');
+  const cli = (args, env = {}) => spawnSync(process.execPath, [BIN, ...args],
+    { encoding: 'utf8', env: { ...process.env, ...env } });
+
+  // 1. Byte-identical to plain filter mode, for every fixture, in both the
+  //    default and the `single` namespace mode, served from the cache by the
+  //    CLI (the path Doxygen takes). The first run builds the entry, the rest
+  //    must be hits.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ts2doxy-cache-test-'));
+  const env = { XDG_CACHE_HOME: home };
+  const cases = [
+    ...fs.readdirSync(SRC).map((f) => [path.join(SRC, f), []]),
+    [MODES_SRC, ['--namespace-mode', 'single']],
+  ];
+  for (const [file, args] of cases) {
+    const plain = filterFile(file, args.length ? { namespaceMode: 'single' } : {}).text;
+    for (const pass of ['miss or first hit', 'hit']) {
+      const run = cli([...args, file], env);
+      check(`cache (${pass}): ${path.basename(file)} ${args.join(' ')} byte-identical to plain filter mode`,
+        run.status === 0 && run.stdout === plain,
+        run.status ? run.stderr : 'the cached output differs');
+    }
+  }
+  const entries = fs.readdirSync(path.join(home, 'ts2doxy'));
+  check('cache: one entry per tsconfig and option set', entries.length === 2, entries.join(', '));
+  for (const entry of entries) {
+    const gens = fs.readdirSync(path.join(home, 'ts2doxy', entry)).filter((e) => e.startsWith('g-'));
+    check(`cache: entry ${entry} built once`, gens.length === 1, gens.join(', '));
+  }
+  check('cache: a hit does not load typescript',
+    !/typescript/.test(spawnSync(process.execPath, ['-e', `
+      require(${JSON.stringify(BIN)});
+      process.on('exit', () => process.stderr.write(Object.keys(require.cache).join('\\n')));`,
+    path.join(SRC, 'shapes.ts')], { encoding: 'utf8', env: { ...process.env, ...env } }).stderr));
+  fs.rmSync(home, { recursive: true, force: true });
+
+  // 2. Invalidation, on a throw-away project: b.ts defines what a.ts calls.
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ts2doxy-cache-proj-'));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ts2doxy-cache-root-'));
+  const write = (rel, text) => {
+    const full = path.join(proj, rel);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, text);
+    // A different size is not guaranteed, a different mtime is not either
+    // (coarse timestamps): move the mtime forward explicitly.
+    const later = new Date(Date.now() + 1000 * (++write.n));
+    fs.utimesSync(full, later, later);
+  };
+  write.n = 0;
+  write('base.json', '{ "compilerOptions": { "strict": true } }\n');
+  write('tsconfig.json', '{ "extends": "./base.json", "include": ["src"] }\n');
+  write('src/b.ts', 'export class B {\n  ping(): void {}\n}\n');
+  write('src/a.ts', 'import { B } from "./b";\nexport function run(b: B): void {\n  b.ping();\n}\n');
+  const A = path.join(proj, 'src', 'a.ts');
+  const current = () => {
+    const entry = fs.readdirSync(root)[0];
+    return fs.readFileSync(path.join(root, entry, 'current'), 'utf8');
+  };
+  const agrees = (name, file = A) => {
+    const cached = cache.lookup(file, {}, root);
+    const plain = filterFile(file).text;
+    check(`cache invalidation: ${name}`, cached && cached.text === plain,
+      cached ? `cached:\n${cached.text}\nplain:\n${plain}` : 'not served from the cache');
+    return cached ? cached.text : '';
+  };
+  const first = agrees('initial build');
+  contains('cache invalidation: fixture has the call edge', first, '::B::ping();');
+  const gen = current();
+  agrees('unchanged project is a hit');
+  check('cache invalidation: a hit keeps the generation', current() === gen);
+
+  write('src/b.ts', 'export class B {\n  pong(): void {}\n}\n');
+  write('src/a.ts', 'import { B } from "./b";\nexport function run(b: B): void {\n  b.pong();\n}\n');
+  contains('cache invalidation: edited source file rebuilds', agrees('edited source files'), '::B::pong();');
+  check('cache invalidation: an edit makes a new generation', current() !== gen);
+
+  // only the imported file changes: a.ts's own text is the same, its
+  // translation is not (the call target moved into a namespace)
+  write('src/b.ts', 'export namespace N {\n  export class B {\n    pong(): void {}\n  }\n}\nexport class B extends N.B {}\n');
+  agrees('edited dependency changes the dependent file');
+
+  write('base.json', '{ "compilerOptions": { "strict": true, "rootDir": "src" } }\n');
+  check('cache invalidation: rootDir from an extended config changes the namespace',
+    !agrees('edited extended config').includes('namespace src'));
+
+  write('tsconfig.json', '{ "extends": "./base.json", "include": ["src"], "exclude": ["src/a.ts"] }\n');
+  check('cache invalidation: a file the tsconfig now excludes is not served from the cache',
+    cache.lookup(A, {}, root) === null);
+  write('tsconfig.json', '{ "extends": "./base.json", "include": ["src"] }\n');
+  agrees('tsconfig edited back');
+
+  // a new file in a directory that existed, empty, when the cache was built
+  fs.rmSync(path.join(proj, 'src', 'empty'), { recursive: true, force: true });
+  write('src/empty/.keep', '');
+  agrees('rebuilt with an empty directory');
+  write('src/empty/d.ts', 'export function d(): void {}\n');
+  agrees('a new file in a formerly empty directory is picked up', path.join(proj, 'src', 'empty', 'd.ts'));
+  write('src/sub/c.ts', 'export function c(): void {}\n');
+  agrees('a new file in a new directory is picked up', path.join(proj, 'src', 'sub', 'c.ts'));
+  fs.rmSync(path.join(proj, 'src', 'sub'), { recursive: true });
+  fs.rmSync(path.join(proj, 'src', 'b.ts'));
+  agrees('a deleted file is noticed (the import no longer resolves)');
+
+  // a directory touched without a change to its listing is still a hit
+  const before = current();
+  fs.mkdirSync(path.join(proj, 'src', '.hidden'));
+  agrees('a touched directory with the same listing');
+  check('cache invalidation: a touched directory keeps the generation', current() === before);
+
+  // 3. Locking. A live lock holder makes a filter run wait; releasing the
+  //    lock lets it finish. A lock left behind by a dead process is broken.
+  write('src/b.ts', 'export class B {\n  ping(): void {}\n}\n');
+  const entryDir = path.join(root, fs.readdirSync(root)[0]);
+  const lock = path.join(entryDir, 'lock');
+  fs.mkdirSync(lock);
+  fs.writeFileSync(path.join(lock, 'owner'), JSON.stringify({ pid: process.pid, host: os.hostname() }));
+  const plainA = filterFile(A).text;
+  const waiter = spawn(process.execPath, ['-e',
+    `process.stdout.write(require(${JSON.stringify(path.join(ROOT, 'src', 'cache'))})
+      .lookup(${JSON.stringify(A)}, {}, ${JSON.stringify(root)}).text)`]);
+  let waited = '';
+  waiter.stdout.on('data', (d) => { waited += d; });
+  const exited = new Promise((resolve) => waiter.on('exit', resolve));
+  const genBefore = current();
+  // Long enough for a build that ignored the lock to finish.
+  const locking = new Promise((resolve) => setTimeout(resolve, 3000))
+    .then(() => {
+      check('cache lock: a run waits while another process holds the lock',
+        waiter.exitCode === null && current() === genBefore && fs.existsSync(path.join(lock, 'owner')),
+        `exit ${waiter.exitCode}, generation ${current() === genBefore ? 'unchanged' : 'replaced'}`);
+      fs.rmSync(lock, { recursive: true });
+      return exited;
+    })
+    .then((code) => {
+      check('cache lock: the waiting run finishes once the lock is released',
+        code === 0 && waited === plainA, `exit ${code}`);
+      // a lock whose owner is dead
+      fs.mkdirSync(lock);
+      const dead = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'],
+        { encoding: 'utf8' }).stdout;
+      fs.writeFileSync(path.join(lock, 'owner'), JSON.stringify({ pid: Number(dead), host: os.hostname() }));
+      write('src/a.ts', 'import { B } from "./b";\nexport function run(b: B): void {\n  b.ping(); b.ping();\n}\n');
+      agrees('a stale lock from a dead process is broken');
+      check('cache lock: released after the build', !fs.existsSync(lock));
+    });
+  pending.push(locking);
+
+  // 4. Parallel runs on a cold cache: every one gets the right text.
+  const coldRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ts2doxy-cache-cold-'));
+  const files = fs.readdirSync(SRC).map((f) => path.join(SRC, f));
+  // After the lock checks, whose timing must not compete with these runs.
+  const runs = files.map((file) => locking.then(() => new Promise((resolve) => {
+    const child = spawn(process.execPath, [BIN, file], { env: { ...process.env, XDG_CACHE_HOME: coldRoot } });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d; });
+    child.on('exit', (code) => resolve({ file, code, out }));
+  })));
+  pending.push(Promise.all(runs).then((results) => {
+    for (const { file, code, out } of results) {
+      check(`cache parallel: ${path.basename(file)} correct under ${files.length} parallel runs`,
+        code === 0 && out === outputs.get(path.basename(file)), `exit ${code}`);
+    }
+    const entry = fs.readdirSync(path.join(coldRoot, 'ts2doxy'));
+    const gens = fs.readdirSync(path.join(coldRoot, 'ts2doxy', entry[0])).filter((e) => e.startsWith('g-'));
+    check('cache parallel: one entry, one generation, lock released',
+      entry.length === 1 && gens.length === 1
+        && !fs.existsSync(path.join(coldRoot, 'ts2doxy', entry[0], 'lock')),
+      `${entry.length} entries, ${gens.length} generations`);
+  }));
+  pending.push(Promise.allSettled(pending.slice()).then(() => {
+    for (const d of [proj, root, coldRoot]) fs.rmSync(d, { recursive: true, force: true });
+  }));
+}
+
 /* ------------------------------------------------------------------ */
 
-process.stdout.write(`\n${passed} checks passed, ${failures.length} failed\n`);
-if (failures.length) {
-  process.stdout.write(`\nfailures:\n  - ${failures.join('\n  - ')}\n`);
-  process.exitCode = 1;
-}
+Promise.allSettled(pending).then((settled) => {
+  for (const result of settled) {
+    if (result.status === 'rejected') failures.push(`async check threw: ${result.reason && result.reason.stack}`);
+  }
+  process.stdout.write(`\n${passed} checks passed, ${failures.length} failed\n`);
+  if (failures.length) {
+    process.stdout.write(`\nfailures:\n  - ${failures.join('\n  - ')}\n`);
+    process.exitCode = 1;
+  }
+});

@@ -185,14 +185,86 @@ Classes that declare no constructor get a synthesized one, documented as such.
 Without it Doxygen has no node to draw `new Foo()` call edges to. Use
 `--no-implicit-ctors` to turn that off.
 
-## Performance and pre-generation mode
+## Performance: the filter cache and pre-generation mode
 
-Doxygen runs an input filter once per file, and each run has to build a
-TypeScript program and a type checker before it can resolve anything. On one
-fixture file that breaks down as 199 ms to load the `typescript` module, 345 ms
-to build the program, 115 ms for the checker and 89 ms of actual translation —
-so the fixed cost is nine tenths of it. Doxygen also filters a file more than
-once per run (992 invocations for 496 files in the measurement below).
+Doxygen runs an input filter once per file, and in fact more than once (two
+runs per file on the fixtures, 992 runs for 496 files on TypeORM). Each run
+of the plain filter has to build a TypeScript program and a type checker
+before it can resolve anything. On one fixture file that breaks down as 199 ms
+to load the `typescript` module, 345 ms to build the program, 115 ms for the
+checker and 89 ms of actual translation — the fixed cost is nine tenths of it.
+
+### The filter cache (on by default)
+
+So the filter does that work once. The first filter run of a Doxygen run
+translates **every file of the tsconfig** in one pass — the same work
+`ts2doxy pregen` does — and stores the results in a cache. Every later run
+checks that nothing the cache was built from has changed and prints the stored
+text, without loading `typescript` at all. Doxygen still reads your original
+files, so the source browser shows the real TypeScript
+(`FILTER_SOURCE_FILES = NO`), exactly as before. Nothing has to be configured.
+
+Measured on the test fixtures (9 files, 18 filter runs), Doxygen 1.18.0,
+`HAVE_DOT = NO`:
+
+| | whole Doxygen run |
+| --- | --- |
+| plain filter, before the cache | 14.0 s |
+| filter with cache, first run (cache built) | 1.6 s |
+| filter with cache, unchanged sources | 0.9 s |
+
+A cache hit costs **about 37 ms**, of which 32 ms is starting `node` itself;
+checking the cache and printing the text is about 4 ms. On a project of
+TypeORM's size that adds up to roughly 40 s for ~1000 filter runs plus one
+whole-project pass of ~6 s (extrapolated from the per-run cost, not measured
+on TypeORM), against 1697 s for the plain filter and ~10 s for
+pre-generation.
+
+What the cache guarantees:
+
+* **The output is byte-identical to the plain filter**, for every file; the
+  test suite checks that for every fixture, in the default and the `single`
+  namespace mode.
+* **It notices changes.** An entry records size and modification time of every
+  file the TypeScript compiler read while building it — your sources, the
+  imported `.d.ts` files, the tsconfig and every config it `extends`, the
+  `package.json` next to the tsconfig, `ts2doxy`'s own sources and the
+  `typescript` version — and the listing of every directory the tsconfig's
+  `include` covers, recursively, so that added and deleted files are noticed
+  too. Any
+  difference rebuilds the entry, on the next filter run. A file is
+  fingerprinted *before* it is read, so an edit made while the cache is being
+  built is caught by the next run.
+* **It is safe with parallel filter runs** (`NUM_PROC_THREADS`). One run builds
+  while the others wait on a lock; the result becomes visible in one atomic
+  rename, so no run ever sees a half-written cache. A lock left behind by a
+  process that died is broken automatically.
+* **It never costs a translation.** If anything about the cache fails, the
+  file is translated directly, with a warning on stderr.
+
+The cache lives in `$XDG_CACHE_HOME/ts2doxy`, i.e. `~/.cache/ts2doxy` by
+default, with one entry per tsconfig and set of output-relevant options. Old
+entries are not pruned; `rm -rf ~/.cache/ts2doxy` is always safe.
+
+Files the cache does not cover are translated the plain way, slowly but
+correctly:
+
+* files that are not in the tsconfig's file list (excluded by `include` /
+  `exclude`, or a project without any tsconfig.json/jsconfig.json);
+* files that failed to translate in the whole-project pass, so that their
+  error is reported exactly as before.
+
+Building the cache translates the whole tsconfig project even if Doxygen's
+`INPUT` covers only part of it; the first filter run of a documentation run
+takes that long.
+
+### Pre-generation mode
+
+Faster still, because Doxygen then starts no filter process at all:
+
+```sh
+ts2doxy pregen src --out doxygen-pregen
+```
 
 Measured on [TypeORM](https://github.com/typeorm/typeorm) 1.1.2,
 `packages/typeorm/src`, 496 source files, with Doxygen 1.9.8 (XML output,
@@ -200,27 +272,19 @@ Measured on [TypeORM](https://github.com/typeorm/typeorm) 1.1.2,
 
 | | translation | Doxygen | total |
 | --- | --- | --- | --- |
-| per-file filtering (`FILTER_PATTERNS`) | — | — | **1697 s** |
+| plain per-file filtering, before the cache | — | — | **1697 s** |
 | pre-generation (`ts2doxy pregen`) | 6.1 s | 4 s | **~10 s** |
-
-So pre-generation is worth it as soon as a project has more than a handful of
-files:
-
-```sh
-ts2doxy pregen src --out doxygen-pregen
-```
 
 It builds one program for the whole tree (1.7 s of the 6.1 s above) and writes
 a mirror of it, 9 ms per file. Then point Doxygen at that tree and drop the
 filter — `INPUT = doxygen-pregen`, no `FILTER_PATTERNS`; `EXTENSION_MAPPING` is
 still needed. `Doxyfile.sample` has the exact settings in a comment.
 
-The two modes produce **byte-identical** output (the test suite checks that for
-every fixture), so the choice is only about speed and one trade-off: with
-pre-generation Doxygen has no original file to show, so the source browser
-lists the generated pseudo-code instead of your TypeScript. Line numbers still
-match the sources. Per-file filtering keeps the real TypeScript in the source
-browser, which is why it remains the default in `Doxyfile.sample`.
+Pre-generation produces **byte-identical** output to the filter (the test suite
+checks that for every fixture). The trade-off: Doxygen has no original file
+to show, so the source browser lists the generated pseudo-code instead of
+your TypeScript. Line numbers still match the sources. That is why the
+filter, with its cache, remains the default in `Doxyfile.sample`.
 
 Pre-generation exits non-zero if any file failed, and tells you where the
 time went, how many declarations could not keep their source line, and the
@@ -582,6 +646,15 @@ place.
   it.
 * `@see` with a name the type checker cannot resolve becomes a note rather
   than a reference, because an unresolvable `\ref` is a Doxygen warning.
+* The filter cache cannot be switched off from the command line yet. Point
+  `XDG_CACHE_HOME` at a fresh directory to start cold, or delete
+  `~/.cache/ts2doxy`.
+* The cache does not notice a file *appearing* outside the directories the
+  tsconfig's `include` covers, at a place where module resolution only looked
+  for one (for example a new `.d.ts` in `node_modules` that changes what an
+  import resolves to). Changes to files that were read, `npm install`
+  upgrades included, are noticed. Delete `~/.cache/ts2doxy` after
+  restructuring dependencies by hand.
 
 ## Development
 

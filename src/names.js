@@ -11,6 +11,9 @@
 
 const path = require('path');
 
+/** Values of `--namespace-mode`. */
+const NAMESPACE_MODES = ['path', 'flat', 'single', 'none'];
+
 /** Extensions we strip when deriving a namespace from a file name. */
 const SOURCE_EXTENSIONS = [
   '.d.ts', '.d.mts', '.d.cts',
@@ -100,6 +103,7 @@ function qualify(parts) {
 
 module.exports = {
   CPP_KEYWORDS,
+  NAMESPACE_MODES,
   SOURCE_EXTENSIONS,
   namespaceSegmentsForFile,
   qualify,
