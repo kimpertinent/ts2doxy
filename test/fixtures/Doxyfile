@@ -54,20 +54,20 @@ EXTENSION_MAPPING      = ts=C++ \
 # of the file.  Use an absolute path, or a path relative to the directory you
 # run doxygen from.  Quote the command when it has arguments.
 #
-# If ts2doxy is installed as a dependency of the documented project:
-FILTER_PATTERNS        = *.ts="node ../../bin/ts2doxy.js --strict" \
-                         *.tsx="node ../../bin/ts2doxy.js --strict" \
-                         *.mts="node ../../bin/ts2doxy.js --strict" \
-                         *.cts="node ../../bin/ts2doxy.js --strict" \
-                         *.js="node ../../bin/ts2doxy.js --strict" \
-                         *.jsx="node ../../bin/ts2doxy.js --strict" \
-                         *.mjs="node ../../bin/ts2doxy.js --strict" \
-                         *.cjs="node ../../bin/ts2doxy.js --strict"
+# Through the shell wrapper, which serves filter-cache hits without node:
+FILTER_PATTERNS        = *.ts="sh ../../bin/ts2doxy-filter.sh --strict" \
+                         *.tsx="sh ../../bin/ts2doxy-filter.sh --strict" \
+                         *.mts="sh ../../bin/ts2doxy-filter.sh --strict" \
+                         *.cts="sh ../../bin/ts2doxy-filter.sh --strict" \
+                         *.js="sh ../../bin/ts2doxy-filter.sh --strict" \
+                         *.jsx="sh ../../bin/ts2doxy-filter.sh --strict" \
+                         *.mjs="sh ../../bin/ts2doxy-filter.sh --strict" \
+                         *.cjs="sh ../../bin/ts2doxy-filter.sh --strict"
 
 # INPUT_FILTER would apply one command to every input file regardless of
 # extension; FILTER_PATTERNS is preferred because it leaves Markdown, images
 # and other inputs untouched.
-# INPUT_FILTER         = "node ../../bin/ts2doxy.js --strict"
+# INPUT_FILTER         = "sh ../../bin/ts2doxy-filter.sh --strict"
 
 # Critical: keep this at NO.  ts2doxy emits every declaration on the line it
 # occupies in the original file, so with FILTER_SOURCE_FILES = NO the source

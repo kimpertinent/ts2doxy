@@ -3,7 +3,7 @@
 # that mode. Paths are relative to this directory, where the test runs Doxygen.
 @INCLUDE               = ../fixtures/Doxyfile
 PROJECT_NAME           = "ts2doxy fixtures (--namespace-mode single)"
-FILTER_PATTERNS        = *.ts="node ../../bin/ts2doxy.js --strict --namespace-mode single"
+FILTER_PATTERNS        = *.ts="sh ../../bin/ts2doxy-filter.sh --strict --namespace-mode single"
 OUTPUT_DIRECTORY       = doxygen-out-single
 WARN_LOGFILE           = doxygen-warnings-single.log
 GENERATE_HTML          = NO

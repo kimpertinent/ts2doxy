@@ -40,6 +40,10 @@ Options:
       --no-bodies            emit declarations only (no call-graph bodies)
       --list-unresolved      note unresolved call sites in the output as
                              comments (diagnostic aid)
+      --no-cache             translate the file directly instead of through the
+                             filter cache (the behaviour before the cache)
+      --cache-dir <dir>      where the filter cache lives (default:
+                             $XDG_CACHE_HOME/ts2doxy, else ~/.cache/ts2doxy)
       --stats <file>         append one JSON line of statistics per file
       --stats-edges          include the emitted call edges in --stats output
       --strict               exit non-zero on errors instead of skipping
@@ -64,6 +68,8 @@ function parseArgs(argv) {
       case '--no-virtual': opts.virtualMethods = false; break;
       case '--no-bodies': opts.emitBodies = false; break;
       case '--list-unresolved': opts.listUnresolved = true; break;
+      case '--no-cache': opts.cache = false; break;
+      case '--cache-dir': opts.cacheDir = next(); break;
       case '--stats': opts.stats = next(); break;
       case '--stats-edges': opts.statsEdges = true; break;
       case '--strict': opts.strict = true; break;
@@ -135,7 +141,7 @@ function filterOne(file, opts) {
   }
   let result = null;
   try {
-    result = require('../src/cache').lookup(target, opts);
+    if (opts.cache !== false) result = require('../src/cache').lookup(target, opts);
   } catch (err) {
     // The cache is an optimization; it must never cost a translation.
     warn(opts, `cache unavailable, translating directly: ${err && err.message}`);

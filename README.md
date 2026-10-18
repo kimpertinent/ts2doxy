@@ -60,6 +60,17 @@ Then, in the project you want to document, point Doxygen at the clone with an
 **absolute** path, and quote the command:
 
 ```
+FILTER_PATTERNS = *.ts="sh /abs/path/to/ts2doxy/bin/ts2doxy-filter.sh" \
+                  *.tsx="sh /abs/path/to/ts2doxy/bin/ts2doxy-filter.sh" \
+                  ...
+```
+
+`bin/ts2doxy-filter.sh` is a POSIX shell wrapper around `bin/ts2doxy.js` that
+serves [filter-cache](#the-filter-cache-on-by-default) hits without starting
+node; everything else it hands to node unchanged. Calling node directly works
+too and gives the same output, only slower per file:
+
+```
 FILTER_PATTERNS = *.ts="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
                   *.tsx="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
                   ...
@@ -68,8 +79,10 @@ FILTER_PATTERNS = *.ts="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
 Both parts matter. Doxygen runs the filter through `/bin/sh`, from the
 directory you start `doxygen` in — not from your interactive shell — so a bare
 `ts2doxy.js` or a relative path that works when you type it may not be found
-there. And an unquoted command is split at the first space, which makes Doxygen
-run plain `node` on your TypeScript. See [Troubleshooting](#troubleshooting).
+there; `node` itself must be on the `PATH` that `/bin/sh` sees, for the
+wrapper as well. And an unquoted command is split at the first space, which
+makes Doxygen run plain `sh` or `node` on your TypeScript. See
+[Troubleshooting](#troubleshooting).
 
 Run `npm install` once in the project you document as well: `ts2doxy` builds a
 real TypeScript program, so it needs that project's own dependencies and
@@ -86,7 +99,7 @@ settings that do the work:
 ```
 EXTENSION_MAPPING   = ts=C++ tsx=C++ mts=C++ cts=C++ js=C++ jsx=C++ mjs=C++ cjs=C++
 FILE_PATTERNS       = *.ts *.tsx *.mts *.cts *.js *.jsx *.mjs *.cjs
-FILTER_PATTERNS     = *.ts="node /abs/path/to/ts2doxy/bin/ts2doxy.js" ...
+FILTER_PATTERNS     = *.ts="sh /abs/path/to/ts2doxy/bin/ts2doxy-filter.sh" ...
 FILTER_SOURCE_FILES = NO
 ```
 
@@ -132,6 +145,8 @@ Options:
 | `--list-unresolved` | Mark unresolved call sites in the output with a comment. |
 | `--no-implicit-ctors` | Do not synthesize constructors for classes that declare none. |
 | `--no-virtual` | Do not mark instance methods `virtual`. |
+| `--no-cache` | Translate the file directly, without the [filter cache](#the-filter-cache-on-by-default) — what every filter run did before the cache. Nothing is read from or written to the cache. |
+| `--cache-dir <dir>` | Where the filter cache lives. Default: `$XDG_CACHE_HOME/ts2doxy`, else `~/.cache/ts2doxy`. |
 | `--strict` | Exit non-zero on errors. By default a file that fails to translate is skipped with a warning on stderr, so one bad file cannot abort a documentation build. |
 
 ## Mapping rules
@@ -204,21 +219,31 @@ text, without loading `typescript` at all. Doxygen still reads your original
 files, so the source browser shows the real TypeScript
 (`FILTER_SOURCE_FILES = NO`), exactly as before. Nothing has to be configured.
 
-Measured on the test fixtures (9 files, 18 filter runs), Doxygen 1.18.0,
-`HAVE_DOT = NO`:
+Measured on [TypeORM](https://github.com/typeorm/typeorm) 1.1.2,
+`packages/typeorm/src` (496 files documented; the tsconfig covers 3279 files
+including the tests, so the cache translates all of those), Doxygen 1.18.0,
+HTML and XML output, whole Doxygen run:
 
-| | whole Doxygen run |
-| --- | --- |
-| plain filter, before the cache | 14.0 s |
-| filter with cache, first run (cache built) | 1.6 s |
-| filter with cache, unchanged sources | 0.9 s |
+| filter | `HAVE_DOT = NO` | `HAVE_DOT = YES` |
+| --- | --- | --- |
+| node + cache, first run (cache built) | 92.1 s | 104.8 s |
+| node + cache, unchanged sources | 81.7 s | 94.5 s |
+| shell wrapper + cache, first run | 49.5 s | 63.8 s |
+| shell wrapper + cache, unchanged sources | **39.0 s** | **49.7 s** |
 
-A cache hit costs **about 37 ms**, of which 32 ms is starting `node` itself;
-checking the cache and printing the text is about 4 ms. On a project of
-TypeORM's size that adds up to roughly 40 s for ~1000 filter runs plus one
-whole-project pass of ~6 s (extrapolated from the per-run cost, not measured
-on TypeORM), against 1697 s for the plain filter and ~10 s for
-pre-generation.
+For comparison, the plain filter took 1697 s on the same sources (measured
+earlier with Doxygen 1.9.8, XML only, no Graphviz; not repeated), and
+pre-generation ~10 s plus Graphviz. All runs produced identical XML.
+
+Per filter run on a cache hit:
+
+| | TypeORM (5586 paths checked) | test fixtures (89 paths) |
+| --- | --- | --- |
+| `node bin/ts2doxy.js` | 79 ms | 37 ms |
+| `sh bin/ts2doxy-filter.sh` | 34 ms | 6.8 ms |
+| plain filter, no cache | 1.7 s (1697 s for 992 runs, Doxygen 1.9.8) | 1.2 s |
+
+Building the cache for TypeORM's 3279 files takes about 10 s, once.
 
 What the cache guarantees:
 
@@ -242,9 +267,49 @@ What the cache guarantees:
 * **It never costs a translation.** If anything about the cache fails, the
   file is translated directly, with a warning on stderr.
 
-The cache lives in `$XDG_CACHE_HOME/ts2doxy`, i.e. `~/.cache/ts2doxy` by
-default, with one entry per tsconfig and set of output-relevant options. Old
-entries are not pruned; `rm -rf ~/.cache/ts2doxy` is always safe.
+The cache lives in `--cache-dir <dir>` if given, else in
+`$XDG_CACHE_HOME/ts2doxy`, i.e. `~/.cache/ts2doxy` by default, with one entry
+per tsconfig and set of output-relevant options. Old entries are not pruned;
+deleting the cache directory is always safe. `--no-cache` bypasses the cache
+entirely and translates each file directly, as before the cache existed.
+
+### The shell wrapper
+
+`bin/ts2doxy-filter.sh` takes the same arguments as `bin/ts2doxy.js`. On a
+cache hit it finds the cache entry, checks freshness with a single
+`xargs -0 stat` call compared byte for byte against a snapshot the node side
+wrote, and prints the stored translation — no node process at all. It is
+written for POSIX `sh` (tested with dash, Debian's and Ubuntu's `/bin/sh`).
+
+It only ever answers when it is certain; everything else is handed to
+`node bin/ts2doxy.js` with the arguments unchanged, so its output is always
+exactly what node would print. It falls back on:
+
+* no cache entry yet, an entry being built (lock present), or a stale entry —
+  any input file or watched directory whose size or modification time differs,
+  or an input that was absent and now exists;
+* `--no-cache`, `--stats` and any other option it does not handle itself
+  (it handles `-p`, `-r`, `-n`, `--namespace-name`, `--cache-dir`,
+  `--no-implicit-ctors`, `--no-virtual`, `--no-bodies`, `--list-unresolved`,
+  `--strict`, `-q`), a missing or empty option value, a second file name;
+* a file name that is not already normalized (`..`, `.`, `//`), values that
+  would need escaping in the cache key (quotes, backslashes, control or
+  non-ASCII characters), a file outside the tsconfig's file list;
+* a `stat` that is not GNU's. The snapshot is written only after the node side
+  has run that exact `stat` command once and reproduced it, so on macOS and
+  the BSDs (whose `stat` has no `-c`), with busybox, or with an old coreutils,
+  the entry has no snapshot and every run goes to node — correct, just without
+  the speed-up;
+* missing tools (`xargs`, `stat`, `cmp`, `cat`), no `$HOME`.
+
+A directory that was merely touched (Doxygen creating its output next to your
+sources) makes the wrapper fall back once; node confirms the listing is
+unchanged and refreshes the snapshot, and the wrapper serves hits again.
+
+The cost of a hit grows with the size of the tsconfig project, since every
+file in it is checked. TypeORM's tsconfig includes its 2782 test files next to
+the 496 sources, so each hit checks 5586 paths. A tsconfig that covers only
+what you document (passed with `-p`) makes hits proportionally cheaper.
 
 Files the cache does not cover are translated the plain way, slowly but
 correctly:
@@ -572,7 +637,8 @@ with the working directory you started `doxygen` in. `PATH` additions from your
 shell profile, shell functions, and `node_modules/.bin` entries that your
 package manager puts on `PATH` are all absent there, and an executable
 `ts2doxy.js` relying on its shebang may not be found at all. Always write
-`node` plus an absolute path to the clone.
+`sh` or `node` plus an absolute path to the clone, and make sure `node` is on
+the `PATH` that `/bin/sh` gets (the shell wrapper falls back to it).
 
 ### `Cannot find module 'typescript'`
 
@@ -646,9 +712,6 @@ place.
   it.
 * `@see` with a name the type checker cannot resolve becomes a note rather
   than a reference, because an unresolvable `\ref` is a Doxygen warning.
-* The filter cache cannot be switched off from the command line yet. Point
-  `XDG_CACHE_HOME` at a fresh directory to start cold, or delete
-  `~/.cache/ts2doxy`.
 * The cache does not notice a file *appearing* outside the directories the
   tsconfig's `include` covers, at a place where module resolution only looked
   for one (for example a new `.d.ts` in `node_modules` that changes what an
@@ -664,7 +727,8 @@ npm test            # translation checks + Doxygen integration (if doxygen is on
 ```
 
 The fixtures in `test/fixtures/src` cover every mapping rule above;
-`test/fixtures/Doxyfile` is a copy of `Doxyfile.sample` wired to the checkout.
+`test/fixtures/Doxyfile` is a copy of `Doxyfile.sample` wired to the checkout
+(through the shell wrapper, so the Doxygen checks exercise it).
 `test/fixtures-modes` holds the free-function fixture for the `single` and
 `none` namespace modes, with one Doxyfile per mode that includes the main one.
 Pick the Doxygen build with `DOXYGEN=/path/to/doxygen npm test`.

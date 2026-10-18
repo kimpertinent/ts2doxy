@@ -1083,6 +1083,189 @@ if (doxVersion) {
 }
 
 
+/* --- shell wrapper for cache hits, --no-cache, --cache-dir --- */
+
+{
+  const os = require('os');
+  const { spawnSync } = require('child_process');
+  const { filterFile } = require('../src/index');
+  const BIN = path.join(ROOT, 'bin', 'ts2doxy.js');
+  const WRAPPER = path.join(ROOT, 'bin', 'ts2doxy-filter.sh');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ts2doxy-wrapper-'));
+  const cacheDir = path.join(tmp, 'cache');
+
+  // A `node` on PATH that notes every start, so a test can tell a hit served
+  // by the shell from a fallback to node.
+  const shim = path.join(tmp, 'shim');
+  const log = path.join(tmp, 'node.log');
+  fs.mkdirSync(shim);
+  fs.writeFileSync(path.join(shim, 'node'),
+    `#!/bin/sh\necho started >> "${log}"\nexec "${process.execPath}" "$@"\n`, { mode: 0o755 });
+
+  /**
+   * Run the wrapper. `pathDirs` replaces the system part of PATH (the shim
+   * always comes first). Returns stdout, the exit status and whether node ran.
+   */
+  const wrap = (args, { env = {}, pathDirs = process.env.PATH, cwd = ROOT } = {}) => {
+    fs.rmSync(log, { force: true });
+    const run = spawnSync('/bin/sh', [WRAPPER, ...args], {
+      cwd,
+      encoding: 'utf8',
+      env: { ...process.env, XDG_CACHE_HOME: path.join(tmp, 'xdg'), ...env, PATH: `${shim}:${pathDirs}` },
+    });
+    return { out: run.stdout, err: run.stderr, status: run.status, node: fs.existsSync(log) };
+  };
+  const node = (args, env = {}) => spawnSync(process.execPath, [BIN, ...args], {
+    encoding: 'utf8', env: { ...process.env, XDG_CACHE_HOME: path.join(tmp, 'xdg'), ...env },
+  });
+
+  // 1. Hits: byte-identical to the node path and to plain filtering, and node
+  //    is not started. Every option the wrapper understands is covered, since
+  //    each must lead it to the same cache entry node uses.
+  const variants = [
+    [[], {}],
+    [['--namespace-mode', 'single'], { namespaceMode: 'single' }],
+    [['-n', 'flat', '--no-virtual', '--no-implicit-ctors'], { namespaceMode: 'flat', virtualMethods: false, implicitCtors: false }],
+    [['--no-bodies', '-q', '--strict'], { emitBodies: false }],
+    [['--list-unresolved', '-r', FIXTURES], { listUnresolved: true, root: FIXTURES }],
+    [['--namespace-name', 'demo', '-n', 'single', '-p', path.join(FIXTURES, 'tsconfig.json')],
+      { namespaceMode: 'single', namespaceName: 'demo', project: path.join(FIXTURES, 'tsconfig.json') }],
+    [['--project', FIXTURES, '--cache-dir', cacheDir], { project: FIXTURES }],
+  ];
+  for (const [args, opts] of variants) {
+    for (const name of fs.readdirSync(SRC)) {
+      const file = path.join(SRC, name);
+      const plain = filterFile(file, opts).text;
+      const viaNode = node([...args, file]);
+      const hit = wrap([...args, file]);
+      const label = `wrapper ${args.join(' ') || '(no options)'}: ${name}`;
+      check(`${label}: node path byte-identical to plain filtering`, viaNode.stdout === plain);
+      check(`${label}: shell hit byte-identical to the node path`,
+        hit.status === 0 && hit.out === viaNode.stdout, hit.err);
+      check(`${label}: served without node`, !hit.node);
+    }
+  }
+  check('wrapper --cache-dir: the cache is written there', fs.readdirSync(cacheDir).length === 1);
+
+  // 2. --no-cache: no cache is used or written, by node or the wrapper.
+  const noCacheDir = path.join(tmp, 'nocache');
+  const shapes = path.join(SRC, 'shapes.ts');
+  const plainShapes = filterFile(shapes).text;
+  const direct = node(['--no-cache', '--cache-dir', noCacheDir, shapes]);
+  check('--no-cache: output equals plain filtering', direct.stdout === plainShapes);
+  check('--no-cache: no cache written', !fs.existsSync(noCacheDir));
+  const wrappedNoCache = wrap(['--no-cache', '--cache-dir', noCacheDir, shapes]);
+  check('wrapper --no-cache: handed to node, no cache written',
+    wrappedNoCache.node && wrappedNoCache.out === plainShapes && !fs.existsSync(noCacheDir));
+  check('--help lists --no-cache and --cache-dir',
+    /--no-cache/.test(node(['--help']).stdout) && /--cache-dir <dir>/.test(node(['--help']).stdout));
+
+  // 3. Every fallback, forced: node must run and the output must still be
+  //    exactly the plain translation.
+  const fallsBack = (name, args, options, expected = plainShapes) => {
+    const run = wrap(args, options);
+    check(`wrapper fallback (${name}): node takes over`, run.node, run.err);
+    check(`wrapper fallback (${name}): output is the plain translation`,
+      run.status === 0 && run.out === expected, run.err);
+    return run;
+  };
+  fallsBack('no cache yet', [shapes], { env: { XDG_CACHE_HOME: path.join(tmp, 'cold') } });
+  check('wrapper: the fallback built the cache, the next run is a hit',
+    !wrap([shapes], { env: { XDG_CACHE_HOME: path.join(tmp, 'cold') } }).node);
+  fallsBack('option only node knows', ['--stats', path.join(tmp, 'stats.jsonl'), shapes]);
+  check('wrapper fallback (option only node knows): node wrote the statistics',
+    fs.existsSync(path.join(tmp, 'stats.jsonl')));
+  fallsBack('unnormalized path', [path.join(SRC, '..', 'src', 'shapes.ts').replace('/src/shapes', '/src/../src/shapes')]);
+  fallsBack('relative path with ..', ['../fixtures/src/shapes.ts'], { cwd: path.join(ROOT, 'test', 'fixtures-modes') });
+  fallsBack('HOME and XDG_CACHE_HOME unset', [shapes], { env: { XDG_CACHE_HOME: '', HOME: '' } });
+
+  // stat that is not GNU's: BSD/macOS stat rejects -c
+  const bsd = path.join(tmp, 'bsd');
+  fs.mkdirSync(bsd);
+  fs.writeFileSync(path.join(bsd, 'stat'),
+    '#!/bin/sh\necho "stat: illegal option -- c" >&2\necho "usage: stat [-FLnq] [-f format | -l | -r | -s | -x] [-t timefmt] [file ...]" >&2\nexit 1\n',
+    { mode: 0o755 });
+  fallsBack('BSD stat when serving', [shapes], { pathDirs: `${bsd}:${process.env.PATH}` });
+  const bsdCache = path.join(tmp, 'bsd-cache');
+  fallsBack('BSD stat when building', ['--cache-dir', bsdCache, shapes], { pathDirs: `${bsd}:${process.env.PATH}` });
+  const bsdEntry = path.join(bsdCache, fs.readdirSync(bsdCache)[0]);
+  const bsdGen = fs.readFileSync(path.join(bsdEntry, 'current'), 'utf8');
+  check('wrapper: a build under a foreign stat writes no shell data',
+    !fs.existsSync(path.join(bsdEntry, bsdGen, 'shell.snap')));
+  fallsBack('no shell data in the entry', ['--cache-dir', bsdCache, shapes]);
+
+  // missing tools: a PATH holding everything but cmp
+  const nocmp = path.join(tmp, 'nocmp');
+  fs.mkdirSync(nocmp);
+  for (const tool of ['xargs', 'stat', 'cat']) {
+    const found = spawnSync('/bin/sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).stdout.trim();
+    fs.symlinkSync(found, path.join(nocmp, tool));
+  }
+  fallsBack('cmp missing', [shapes], { pathDirs: nocmp });
+  fallsBack('nothing on PATH but node', [shapes], { pathDirs: path.join(tmp, 'empty') });
+
+  // stale, locked, touched directory: on a throw-away project
+  const proj = path.join(tmp, 'proj');
+  fs.mkdirSync(path.join(proj, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(proj, 'tsconfig.json'), '{ "include": ["src"] }\n');
+  const A = path.join(proj, 'src', 'a.ts');
+  fs.writeFileSync(A, 'export function a(): void {}\n');
+  fs.writeFileSync(path.join(proj, 'src', 'b.ts'), 'export function b(): void {}\n');
+  // the default-options entry of the throw-away project
+  const projEntry = () => {
+    const root = path.join(tmp, 'xdg', 'ts2doxy');
+    for (const e of fs.readdirSync(root)) {
+      const key = JSON.parse(fs.readFileSync(path.join(root, e, 'key.json'), 'utf8'));
+      if (key.config === path.join(proj, 'tsconfig.json') && Object.keys(key).length === 2) return path.join(root, e);
+    }
+    return null;
+  };
+  // Each fallback below starts from a hit, so the fallback is due to the one
+  // thing the test changed.
+  const hitFirst = (name, args = [A]) => check(`wrapper (${name}): a hit beforehand`, !wrap(args).node);
+  node([A]);
+  check('wrapper: throw-away project is a hit', !wrap([A]).node);
+  const later = new Date(Date.now() + 5000);
+  fs.writeFileSync(path.join(proj, 'src', 'b.ts'), 'export function bb(): void {}\n');
+  fs.utimesSync(path.join(proj, 'src', 'b.ts'), later, later);
+  fallsBack('stale entry', [A], {}, filterFile(A).text);
+  check('wrapper: after the rebuild, a hit again', !wrap([A]).node);
+
+  hitFirst('touched directory');
+  fs.mkdirSync(path.join(proj, 'src', '.untracked'));
+  fallsBack('touched directory', [A], {}, filterFile(A).text);
+  check('wrapper: node refreshed the touched directory, a hit again', !wrap([A]).node);
+
+  hitFirst('locked entry');
+  const lock = path.join(projEntry(), 'lock');
+  fs.mkdirSync(lock);
+  const dead = spawnSync(process.execPath, ['-e', 'process.stdout.write(String(process.pid))'],
+    { encoding: 'utf8' }).stdout;
+  fs.writeFileSync(path.join(lock, 'owner'), JSON.stringify({ pid: Number(dead), host: os.hostname() }));
+  fallsBack('locked entry', [A], {}, filterFile(A).text);
+  fs.rmSync(lock, { recursive: true, force: true });
+
+  fs.writeFileSync(path.join(proj, 'outside.ts'), 'export function o(): void {}\n');
+  fallsBack('file outside the tsconfig file list', [path.join(proj, 'outside.ts')], {},
+    filterFile(path.join(proj, 'outside.ts')).text);
+
+  hitFirst('generation removed');
+  const gone = path.join(projEntry(), fs.readFileSync(path.join(projEntry(), 'current'), 'utf8'));
+  fs.rmSync(path.join(gone, 'tree'), { recursive: true });
+  fallsBack('generation removed under the wrapper', [A], {}, filterFile(A).text);
+
+  // an input that was absent when the entry was built (the package.json that
+  // names the namespace of `--namespace-mode single`) appears
+  node(['-n', 'single', A]);
+  check('wrapper: single-mode entry is a hit', !wrap(['-n', 'single', A]).node);
+  fs.writeFileSync(path.join(proj, 'package.json'), '{ "name": "@demo/renamed" }\n');
+  const renamed = fallsBack('absent input appeared', ['-n', 'single', A], {},
+    filterFile(A, { namespaceMode: 'single' }).text);
+  contains('wrapper: the new package.json names the namespace', renamed.out, 'demo_renamed');
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
 /* --- filter-mode cache --- */
 
 {

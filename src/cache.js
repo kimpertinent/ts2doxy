@@ -16,15 +16,25 @@
  * cost of starting node. Everything up to "the entry is fresh, print it" uses
  * plain `fs` calls; `typescript` is required only to build an entry.
  *
- * Layout, under `$XDG_CACHE_HOME/ts2doxy` (default `~/.cache/ts2doxy`):
+ * Layout, under `--cache-dir`, else `$XDG_CACHE_HOME/ts2doxy` (default
+ * `~/.cache/ts2doxy`):
  *
- *     <hash>/                one entry per tsconfig and set of output options
- *       key.json             the tsconfig and options the entry is for
- *       current              name of the generation that is in use
- *       lock/                exists while a process builds a generation
- *       g-<id>/manifest.json what the generation was built from
- *       g-<id>/<n>.txt       the translation of one file
- *       g-<id>/<n>.json      its statistics
+ *     <hash>/                  one entry per tsconfig and set of output options
+ *       key.json               the tsconfig and options the entry is for
+ *       current                name of the generation that is in use
+ *       lock/                  exists while a process builds a generation
+ *       g-<id>/manifest.json   what the generation was built from
+ *       g-<id>/tree/<path>.txt the translation of the file at absolute <path>
+ *       g-<id>/tree/<path>.json  its statistics
+ *       g-<id>/shell.*         freshness data for bin/ts2doxy-filter.sh
+ *
+ * The `shell.*` files let the shell wrapper serve a hit without starting node:
+ * `shell.list` holds the inputs and watched directories, NUL-separated, and
+ * `shell.snap` exactly what `xargs -0 stat -c '%s %.9Y'` prints for them while
+ * the generation is fresh; `shell.absent` lists inputs that must stay absent.
+ * They are written only when that `stat` command was run once and reproduced
+ * the snapshot, so a `stat` that is not GNU's (BSD, macOS, busybox) leaves the
+ * wrapper with nothing to compare against, and it hands every run to node.
  *
  * A generation is written completely before `current` is switched to it with
  * a rename, so a reader sees either the old generation or the new one, never a
@@ -38,7 +48,7 @@ const path = require('path');
 const { locateConfigFile } = require('./findup');
 
 /** Bumped whenever the layout or the manifest format changes. */
-const FORMAT = 1;
+const FORMAT = 2;
 
 /** Options that change the translation; anything else does not split entries. */
 const OUTPUT_OPTIONS = [
@@ -54,8 +64,9 @@ const WAIT_LIMIT_MS = 15 * 60 * 1000;
 
 const POLL_MS = 50;
 
-/** Directory holding all cache entries. */
-function cacheRoot() {
+/** Directory holding all cache entries: `--cache-dir`, else the default. */
+function cacheRoot(opts = {}) {
+  if (opts.cacheDir) return path.resolve(opts.cacheDir);
   const base = process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
   return path.join(base, 'ts2doxy');
 }
@@ -84,7 +95,7 @@ function hash(text) {
  * The cache entry for `file`: `{dir, key}`, or null when there is no tsconfig
  * to key it on (a lone file outside any project is translated directly).
  */
-function entryFor(file, opts, root = cacheRoot()) {
+function entryFor(file, opts, root = cacheRoot(opts)) {
   const configPath = locateConfigFile(file, opts.project);
   if (!configPath || !fs.existsSync(configPath)) return null;
   const key = { format: FORMAT, config: path.resolve(configPath) };
@@ -112,11 +123,15 @@ function entryFor(file, opts, root = cacheRoot()) {
   }
 }
 
-/** `[mtimeMs, size]` of a file, or null when it is gone. */
+/**
+ * `[mtime, size]` of a file or directory, or null when it is gone; mtime as
+ * `seconds.nanoseconds`, nine digits, the form GNU `stat -c %.9Y` prints.
+ */
 function fingerprint(file) {
   try {
-    const st = fs.statSync(file);
-    return [st.mtimeMs, st.size];
+    const st = fs.statSync(file, { bigint: true });
+    const ns = st.mtimeNs;
+    return [`${ns / 1000000000n}.${String(ns % 1000000000n).padStart(9, '0')}`, Number(st.size)];
   } catch {
     return null;
   }
@@ -144,22 +159,97 @@ function sameFingerprint(a, b) {
 }
 
 /**
- * Is the generation described by `manifest` still what a fresh translation
- * would produce? True when no file that went into it changed, and no directory
- * the tsconfig globs over gained or lost an entry.
+ * Is the generation described by `current.manifest` still what a fresh
+ * translation would produce? True when no file that went into it changed, and
+ * no directory the tsconfig globs over gained or lost an entry.
+ *
+ * A directory that was touched without a change to its listing (Doxygen
+ * writing its output next to the sources) does not invalidate; its new
+ * fingerprint is written back, so the shell wrapper, which compares
+ * fingerprints only, can serve hits again.
  */
-function isFresh(manifest) {
-  for (const [file, mtimeMs, size] of manifest.inputs) {
-    if (!sameFingerprint(mtimeMs === null ? null : [mtimeMs, size], fingerprint(file))) return false;
+function isFresh(current) {
+  const { manifest } = current;
+  for (const [file, mtime, size] of manifest.inputs) {
+    if (!sameFingerprint(mtime === null ? null : [mtime, size], fingerprint(file))) return false;
   }
-  for (const [dir, mtimeMs, entries] of manifest.dirs) {
+  let touched = false;
+  for (const record of manifest.dirs) {
+    const [dir, mtime, size, entries] = record;
+    // Fingerprint before listing: a change after the listing is then caught
+    // by the next run.
     const now = fingerprint(dir);
-    if (now && now[0] === mtimeMs) continue;
-    // The directory was touched; that matters only if its listing changed
-    // (Doxygen writing its output next to the sources must not invalidate).
-    const current = listing(dir);
-    if (!current || current.join('\n') !== entries.join('\n')) return false;
+    if (now && now[0] === mtime && now[1] === size) continue;
+    const list = listing(dir);
+    if (!now || !list || list.join('\n') !== entries.join('\n')) return false;
+    record[1] = now[0];
+    record[2] = now[1];
+    touched = true;
   }
+  if (touched) {
+    try {
+      writeAtomic(path.join(current.gen, 'manifest.json'), JSON.stringify(manifest));
+      if (fs.existsSync(path.join(current.gen, 'shell.snap'))) {
+        writeAtomic(path.join(current.gen, 'shell.snap'), shellSnapshot(manifest));
+      }
+    } catch {
+      // The generation was replaced meanwhile; nothing to refresh.
+    }
+  }
+  return true;
+}
+
+/** Write a file via a rename, so no reader sees it half-written. */
+function writeAtomic(file, data) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, data);
+  fs.renameSync(tmp, file);
+}
+
+/** Where a generation keeps the translation of `file` (`.txt`, `.json`). */
+function treePath(gen, file) {
+  return path.join(gen, 'tree', file.replace(/^([A-Za-z]):/, '$1'));
+}
+
+/** The paths the shell wrapper stats, in order: present inputs, then dirs. */
+function shellPaths(manifest) {
+  return [
+    ...manifest.inputs.filter(([, mtime]) => mtime !== null).map(([f]) => f),
+    ...manifest.dirs.map(([d]) => d),
+  ];
+}
+
+/** What `xargs -0 stat -c '%s %.9Y' < shell.list` prints while fresh. */
+function shellSnapshot(manifest) {
+  return [
+    ...manifest.inputs.filter(([, mtime]) => mtime !== null),
+    ...manifest.dirs,
+  ].map(([, mtime, size]) => `${size} ${mtime}\n`).join('');
+}
+
+/**
+ * Write the shell wrapper's freshness data, if this system's `stat` prints
+ * exactly what we expect. Without it the wrapper falls back to node.
+ */
+function writeShellData(genDir, manifest) {
+  const paths = shellPaths(manifest);
+  const absent = manifest.inputs.filter(([, mtime]) => mtime === null).map(([f]) => f);
+  // The wrapper reads shell.absent line by line and keys on plain bytes.
+  if ([...paths, ...absent].some((p) => /[\n\0]/.test(p))) return false;
+  const list = paths.map((p) => `${p}\0`).join('');
+  const snap = shellSnapshot(manifest);
+  let printed;
+  try {
+    printed = require('child_process').spawnSync('xargs', ['-0', 'stat', '-c', '%s %.9Y'], {
+      input: list, encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' },
+    });
+  } catch {
+    return false;
+  }
+  if (printed.status !== 0 || printed.stdout !== snap) return false;
+  fs.writeFileSync(path.join(genDir, 'shell.list'), list);
+  fs.writeFileSync(path.join(genDir, 'shell.absent'), absent.map((p) => `${p}\n`).join(''));
+  fs.writeFileSync(path.join(genDir, 'shell.snap'), snap);
   return true;
 }
 
@@ -184,8 +274,9 @@ function readCurrent(dir) {
 function serve(current, file) {
   const record = current.manifest.files[file];
   if (!record || record.failed) return null;
-  const text = fs.readFileSync(path.join(current.gen, `${record.id}.txt`), 'utf8');
-  const stats = JSON.parse(fs.readFileSync(path.join(current.gen, `${record.id}.json`), 'utf8'));
+  const base = treePath(current.gen, file);
+  const text = fs.readFileSync(`${base}.txt`, 'utf8');
+  const stats = JSON.parse(fs.readFileSync(`${base}.json`, 'utf8'));
   return { text, stats };
 }
 
@@ -260,6 +351,10 @@ function build(dir, file, opts) {
   for (const f of fs.readdirSync(__dirname)) note(path.join(__dirname, f));
   note(require.resolve('typescript/package.json'));
 
+  // The directory listings are taken before the program reads the file list,
+  // for the same reason.
+  const dirs = watchedDirectories(project).map((d) => [d, ...(fingerprint(d) || [null, null]), listing(d) || []]);
+
   const host = ts.createCompilerHost(project.options, /* setParentNodes */ true);
   const readFile = host.readFile.bind(host);
   host.readFile = (f) => {
@@ -273,15 +368,16 @@ function build(dir, file, opts) {
   const genDir = path.join(dir, gen);
   fs.mkdirSync(genDir);
   const files = {};
-  let id = 0;
   for (const name of project.fileNames) {
     const resolved = path.resolve(name);
     if (/[\\/]node_modules[\\/]/.test(resolved)) continue;
-    const record = { id: id++ };
+    const record = {};
     try {
       const result = session.translate(resolved);
-      fs.writeFileSync(path.join(genDir, `${record.id}.txt`), result.text);
-      fs.writeFileSync(path.join(genDir, `${record.id}.json`), JSON.stringify(result.stats));
+      const base = treePath(genDir, resolved);
+      fs.mkdirSync(path.dirname(base), { recursive: true });
+      fs.writeFileSync(`${base}.txt`, result.text);
+      fs.writeFileSync(`${base}.json`, JSON.stringify(result.stats));
     } catch (err) {
       record.failed = String(err && err.message);
     }
@@ -291,10 +387,11 @@ function build(dir, file, opts) {
   const manifest = {
     format: FORMAT,
     inputs: [...inputs].map(([f, fp]) => [f, fp ? fp[0] : null, fp ? fp[1] : null]),
-    dirs: watchedDirectories(project).map((d) => [d, (fingerprint(d) || [null])[0], listing(d) || []]),
+    dirs,
     files,
   };
   fs.writeFileSync(path.join(genDir, 'manifest.json'), JSON.stringify(manifest));
+  writeShellData(genDir, manifest);
   const pointer = path.join(dir, `current.${process.pid}.tmp`);
   fs.writeFileSync(pointer, gen);
   fs.renameSync(pointer, path.join(dir, 'current'));
@@ -347,7 +444,7 @@ function watchedDirectories(project) {
  *   the build. The caller then translates the file directly, which reproduces
  *   plain filter mode exactly, error messages included.
  */
-function lookup(file, opts = {}, root = cacheRoot()) {
+function lookup(file, opts = {}, root = cacheRoot(opts)) {
   const target = path.resolve(file);
   const entry = entryFor(target, opts, root);
   if (!entry) return null;
@@ -356,7 +453,7 @@ function lookup(file, opts = {}, root = cacheRoot()) {
   const started = Date.now();
   for (let attempt = 0; ; attempt++) {
     const current = readCurrent(dir);
-    if (current && isFresh(current.manifest)) {
+    if (current && isFresh(current)) {
       try {
         return serve(current, target);
       } catch (err) {
@@ -370,7 +467,7 @@ function lookup(file, opts = {}, root = cacheRoot()) {
         // Another process may have finished a build between our check and
         // taking the lock.
         const again = readCurrent(dir);
-        if (again && isFresh(again.manifest)) return serve(again, target);
+        if (again && isFresh(again)) return serve(again, target);
         return serve(build(dir, target, opts), target);
       } finally {
         unlock(dir);
@@ -381,4 +478,4 @@ function lookup(file, opts = {}, root = cacheRoot()) {
   }
 }
 
-module.exports = { FORMAT, cacheRoot, entryFor, isFresh, lookup, readCurrent };
+module.exports = { FORMAT, cacheRoot, entryFor, isFresh, lookup, readCurrent, treePath };

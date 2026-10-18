@@ -394,7 +394,7 @@ change gets noticed.
 `npm test` against 1.18.0: **488 checks passed, 0 failed**. This round
 (`single` mode and the `none` findings) was verified on Doxygen 1.18.0 only.
 
-## Filter-mode cache: done (awaiting review)
+## Filter-mode cache: done
 
 Goal: filter-mode output (real TypeScript in the source browser,
 `FILTER_SOURCE_FILES = NO`) at roughly pregen speed. Chosen: a cache, not a
@@ -431,10 +431,66 @@ a whole Doxygen run takes 14.0 s with the plain filter, 1.6 s with a cold cache,
 path (`cat` + `grep` + `xargs stat` + `cmp` + `cat`, scratch only, not
 committed) took 11 ms. Extrapolated to TypeORM's ~1000 filter runs: ~40 s with
 the node cache, ~17 s with a shell wrapper, ~10 s with pregen. The wrapper
-was **not** built; open questions for review:
+was **not** built at first; at review both open questions were decided: build
+the wrapper, and add `--no-cache` and `--cache-dir` (next section).
 
-1. Shell wrapper for hits (saves ~26 ms per filter run), at the cost of a
-   second freshness implementation in POSIX sh and GNU/BSD `stat`
-   differences?
-2. A switch to turn the cache off, proposed as `--no-cache`, and possibly
-   `--cache-dir <dir>` (today only via `XDG_CACHE_HOME`)?
+## Shell wrapper, `--no-cache`, `--cache-dir`: done (awaiting review)
+
+* `bin/ts2doxy-filter.sh` (POSIX sh, checked with dash and `bash --posix`)
+  takes the arguments of `ts2doxy.js`, rebuilds the cache key, finds the
+  entry and serves a hit with one `xargs -0 stat -c '%s %.9Y' | cmp` against a
+  snapshot. Anything uncertain execs `node ts2doxy.js` with the arguments
+  unchanged: no or stale or locked entry, an absent input that appeared,
+  unknown options (`--no-cache`, `--stats`, ...), empty values, unnormalized
+  paths, values needing JSON escapes, files outside the tsconfig list,
+  missing tools, no `$HOME`, and a `stat` that is not GNU's.
+* `src/cache.js` (format 2): outputs in a mirror tree `tree/<abs path>.txt`
+  (the wrapper needs no lookup), nanosecond fingerprints, and per generation
+  `shell.list` / `shell.snap` / `shell.absent`. These are written only after
+  the node side ran that exact `stat` command and got the snapshot back, so
+  on BSD/macOS/busybox the entry has no snapshot and every run goes to node.
+  A touched directory with an unchanged listing is refreshed in the snapshot
+  by node, so the wrapper hits again afterwards. Directory listings are now
+  taken before the program is built (they were taken after it, which could
+  miss a file added during the build).
+* `--no-cache` translates directly without touching the cache; `--cache-dir`
+  overrides `$XDG_CACHE_HOME/ts2doxy`. Both in `--help` and the README; the
+  wrapper honours both (`--no-cache` by handing to node).
+* `Doxyfile.sample`, the README and the fixture Doxyfiles use the wrapper;
+  the node command is documented as the alternative.
+* Tests: byte-identity wrapper = node path = plain filtering for every
+  fixture under 7 option combinations; each fallback forced (no entry, `--stats`,
+  unnormalized and `..` paths, no HOME/XDG, BSD-style `stat` at serve time and
+  at build time, no shell data, `cmp` missing, empty PATH, stale entry,
+  touched directory, lock, absent input appearing, file outside the tsconfig,
+  generation removed), each starting from a verified hit; `--no-cache` and
+  `--cache-dir` for node and wrapper. The fallback tests were checked by
+  mutation: removing the lock, absent-input and stat checks, or ignoring an
+  option in the key, makes them fail. Removing the tool check or the `cat`
+  fallback does not, because the pipeline and the earlier `-f` check already
+  fall back in those cases. `npm test` against Doxygen 1.18.0:
+  **781 checks passed, 0 failed**.
+
+Measured on TypeORM 1.1.2 `packages/typeorm/src`, Doxygen 1.18.0, HTML + XML,
+whole run (the tsconfig covers 3279 files including tests; 496 documented):
+
+| filter | no Graphviz | Graphviz |
+| --- | --- | --- |
+| node + cache, cold | 92.1 s | 104.8 s |
+| node + cache, warm | 81.7 s | 94.5 s |
+| wrapper, cold | 49.5 s | 63.8 s |
+| wrapper, warm | 39.0 s | 49.7 s |
+
+Plain filter not re-measured, at review's request (1697 s on 1.9.8, XML, no
+dot). Per hit: wrapper 34 ms vs node 79 ms on TypeORM (5586 paths checked:
+3297 project files, 1923 directories, the rest `.d.ts`), 6.8 ms vs 37 ms on the
+fixtures. The hit cost scales with the tsconfig's size; `find -cnewer` was
+tried as a cheaper check and saved only ~10 ms, not worth a second scheme.
+All variants gave identical XML (the per-run checksums differed only in
+`Doxyfile.xml`, which embeds the configuration); 13 sampled TypeORM files
+are byte-identical between wrapper and `--no-cache`.
+
+Observed, not investigated (out of scope): on 1.18.0 TypeORM gives one
+warning that may come from the translation, `Column.ts:103: unexpected token
+TK_COMMAND_AT in comment block while parsing the argument of command param`,
+in addition to the nine known partially documented MongoDB parameters.

@@ -57,44 +57,61 @@ EXTENSION_MAPPING      = ts=C++ \
                          cjs=C++
 
 # Doxygen runs `<filter> <input-file>` and parses the filter's stdout instead
-# of the file.  Two things are not optional here:
+# of the file.
+#
+# The filter is `bin/ts2doxy-filter.sh`, a small POSIX shell wrapper around
+# `bin/ts2doxy.js`: the first filter run translates the whole tsconfig
+# project into a cache (~/.cache/ts2doxy, or --cache-dir <dir>), and every
+# later run is served from that cache by the wrapper without starting node. Whatever the wrapper cannot answer for certain (a
+# stale or missing cache, an option it does not know, a `stat` that is not
+# GNU's, as on macOS) it hands to node unchanged, so the output is the same
+# either way. Add --no-cache to translate every file directly, as ts2doxy did
+# before the cache.
+#
+# Two things are not optional here:
 #
 #   * The command must be QUOTED.  Doxygen splits the value on whitespace, so
-#     `*.ts=node /path/ts2doxy.js` becomes the two items `*.ts=node` and
-#     `/path/ts2doxy.js` -- Doxygen complains about the missing `=` in the
-#     second and runs plain `node` on your TypeScript for the first, which
-#     fails with ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX.
-#   * Use `node` and an ABSOLUTE path to the clone.  Doxygen runs the filter
-#     through /bin/sh, which does not have your interactive shell's PATH.
+#     `*.ts=sh /path/ts2doxy-filter.sh` becomes the two items `*.ts=sh` and
+#     `/path/ts2doxy-filter.sh` -- Doxygen complains about the missing `=` in
+#     the second and runs plain `sh` on your TypeScript for the first.
+#   * Use an ABSOLUTE path to the clone.  Doxygen runs the filter through
+#     /bin/sh, from the directory you start doxygen in, and not with your
+#     interactive shell's PATH; `node` must be on that PATH as well, since the
+#     wrapper falls back to it.
 #
 # Every extension in FILE_PATTERNS needs an entry here: an extension that is
 # mapped to C++ but not filtered is parsed as raw JavaScript by Doxygen's C++
 # parser, silently producing nonsense.
-FILTER_PATTERNS        = *.ts="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
-                         *.tsx="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
-                         *.mts="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
-                         *.cts="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
-                         *.js="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
-                         *.jsx="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
-                         *.mjs="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
-                         *.cjs="node /abs/path/to/ts2doxy/bin/ts2doxy.js"
+FILTER_PATTERNS        = *.ts="sh /abs/path/to/ts2doxy/bin/ts2doxy-filter.sh" \
+                         *.tsx="sh /abs/path/to/ts2doxy/bin/ts2doxy-filter.sh" \
+                         *.mts="sh /abs/path/to/ts2doxy/bin/ts2doxy-filter.sh" \
+                         *.cts="sh /abs/path/to/ts2doxy/bin/ts2doxy-filter.sh" \
+                         *.js="sh /abs/path/to/ts2doxy/bin/ts2doxy-filter.sh" \
+                         *.jsx="sh /abs/path/to/ts2doxy/bin/ts2doxy-filter.sh" \
+                         *.mjs="sh /abs/path/to/ts2doxy/bin/ts2doxy-filter.sh" \
+                         *.cjs="sh /abs/path/to/ts2doxy/bin/ts2doxy-filter.sh"
+
+# Alternative without the shell wrapper: call node directly. Same output and
+# the same cache, but every cache hit starts node: 79 ms instead of 34 ms per
+# file on TypeORM (3279 files), 37 ms instead of 7 ms on a small project.
+# Useful where no POSIX sh is available.
+#
+# FILTER_PATTERNS      = *.ts="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
+#                        *.tsx="node /abs/path/to/ts2doxy/bin/ts2doxy.js" \
+#                        ...
 
 # INPUT_FILTER would apply one command to every input file regardless of
 # extension; FILTER_PATTERNS is preferred because it leaves Markdown, images
 # and other inputs untouched.
-# INPUT_FILTER         = "node /abs/path/to/ts2doxy/bin/ts2doxy.js"
+# INPUT_FILTER         = "sh /abs/path/to/ts2doxy/bin/ts2doxy-filter.sh"
 
 # ---------------------------------------------------------------------------
 # Pre-generation mode (for large projects)
 # ---------------------------------------------------------------------------
 #
-# The filter above is already fast: the first filter run of a Doxygen run
-# translates the whole tsconfig project into a cache (~/.cache/ts2doxy), and
-# every later run only checks that no source changed and prints the cached
-# text, about 40 ms. Nothing needs configuring for that.
-#
-# Pre-generation is faster still, because Doxygen then starts no filter at
-# all:
+# With the cache and the shell wrapper above, filtering costs a few
+# milliseconds per file after the first run. Pre-generation removes even that,
+# because Doxygen then starts no filter at all:
 #
 #     node /abs/path/to/ts2doxy/bin/ts2doxy.js pregen src --out doxygen-pregen
 #
