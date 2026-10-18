@@ -15,7 +15,9 @@
  */
 
 const ts = require('typescript');
-const { Doc, escapeInlineCode, escapeText, neutralizeCommentDelimiters } = require('./doc');
+const {
+  Doc, escapeInlineCode, escapeText, neutralizeCommentDelimiters, planHtml,
+} = require('./doc');
 const { sanitizeIdentifier } = require('./names');
 const { qualifiedNameOfSymbol } = require('./symbols');
 
@@ -170,19 +172,23 @@ function renderLink(part, ctx) {
   return label ? `${escapeInlineCode(written)} (${escapeText(label)})` : escapeInlineCode(written);
 }
 
-/** Render a JSDoc comment body (text plus inline tags) as escaped lines. */
+/**
+ * Render a JSDoc comment body (text plus inline tags) as escaped lines.
+ *
+ * The body is one section for Doxygen's HTML pairing, but it is escaped piece
+ * by piece around its `{@link}`s, so whether an HTML tag is markup is decided
+ * once for all pieces (`planHtml`): `<b>see {@link X}</b>` keeps its `<b>`.
+ */
 function renderComment(comment, ctx) {
   if (comment === undefined || comment === null) return [];
   if (typeof comment === 'string') return escapeText(comment).split(/\r?\n/);
+  const textOf = (part) => (part.kind === ts.SyntaxKind.JSDocText
+    ? part.text
+    : (part.getText ? part.getText() : String(part.text || '')));
+  const plan = planHtml(comment.filter((part) => !isLinkLike(part)).map(textOf));
   let buffer = '';
   for (const part of comment) {
-    if (part.kind === ts.SyntaxKind.JSDocText) {
-      buffer += escapeText(part.text);
-    } else if (isLinkLike(part)) {
-      buffer += renderLink(part, ctx);
-    } else {
-      buffer += escapeText(part.getText ? part.getText() : String(part.text || ''));
-    }
+    buffer += isLinkLike(part) ? renderLink(part, ctx) : escapeText(textOf(part), plan);
   }
   return buffer.split(/\r?\n/);
 }

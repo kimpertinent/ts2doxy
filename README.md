@@ -438,8 +438,29 @@ Comments are carried over with their Markdown intact (Doxygen's
 mean something to Doxygen (`@`, `\`, `<`, `>`, `%`, `&`, `#`) are escaped in
 prose, but three kinds of text are left exactly as written: `` `code spans` ``
 and fenced blocks, the inline HTML tags Doxygen supports (`<b>`, `<i>`,
-`<code>`, `<br>`, `<table>`, …) and HTML entities. So `<b>bold</b>` stays
-bold while `Array<T>` in prose stays readable text.
+`<code>`, `<br>`, `<table>`, …) when they are used as markup, and HTML
+entities. So `<b>bold</b>` stays bold while `Array<T>` in prose stays readable
+text.
+
+A supported tag counts as markup only if Doxygen can pair it; otherwise it is
+escaped and shown literally, because Doxygen warns about a tag it cannot pair
+(`/** The #settings-list <table>. */` gave "expected \<tr\> tag but found
+TK_WORD token instead!"). Pairing is decided per *section* — the description
+of a comment, or the text of one tag such as `@returns` — since Doxygen pairs
+tags only within one: a `<b>` opened in the description and closed in
+`@returns` warns too. Within a section a tag is kept when
+
+* it is a void tag: `<br>`, `<br/>`, `<hr>`, `<img …>`;
+* it has its end tag, matched like a stack: in misnested `<b><i>x</b></i>` the
+  `<b>` pair is kept and the `<i>` tags are escaped;
+* its end tag is optional (`li`, `p`, `dt`, `dd`, `tr`, `td`, `th`, `thead`,
+  `tbody`, `tfoot`) and the element around it is closed, as in
+  `<ul><li>a<li>b</ul>`.
+
+Everything else is escaped: a tag that is never closed (`<table>`, a lone
+`<p>`), an end tag without its start, and the empty-tag form of a non-void
+tag (`<b/>`), which Doxygen rejects. A `{@link}` inside a section does not
+split it, so `<b>see {@link X}</b>` stays bold around the reference.
 
 | JSDoc / TSDoc | Doxygen |
 | --- | --- |
@@ -712,6 +733,9 @@ place.
   it.
 * `@see` with a name the type checker cannot resolve becomes a note rather
   than a reference, because an unresolvable `\ref` is a Doxygen warning.
+* Inline HTML is checked for pairing only, not for structure: a balanced
+  `<table>…</table>` that holds no `<tr>` is passed through, and Doxygen still
+  warns about it.
 * The cache does not notice a file *appearing* outside the directories the
   tsconfig's `include` covers, at a place where module resolution only looked
   for one (for example a new `.d.ts` in `node_modules` that changes what an

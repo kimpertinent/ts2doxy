@@ -100,6 +100,7 @@ const EXPECTED_DRIFT = {
   'functions.ts': 0,
   'inference.ts': 0,
   'docs.ts': 0,
+  'html.ts': 0,
   'legacy.js': 0,
 };
 for (const file of fs.readdirSync(SRC)) {
@@ -324,6 +325,40 @@ contains('<i> kept', docs, '<i>italic</i>');
 contains('<code> kept', docs, '<code>literal</code>');
 contains('<br> kept', docs, 'break<br>after it');
 contains('unknown tag still escaped', docs, 'Array\\<T\\> in prose');
+
+// HTML tags are markup only when balanced in their section, or void
+{
+  const html = outputs.get('html.ts');
+  const { escapeText } = require('../src/doc');
+  contains('html: unbalanced <table> escaped (the reported case)', html, 'The \\#settings-list \\<table\\>.');
+  contains('html: lone end tag escaped', html, 'opened: \\</b\\> here');
+  contains('html: unclosed tag escaped', html, 'Opens \\<b\\> and never');
+  contains('html: balanced and void tags kept', html,
+    'Kept: <b>bold</b>, a break<br>here, <br/> there, and a rule <hr> too.');
+  contains('html: misnesting keeps only the pair that nests', html, '<b>\\<i\\>both</b>\\</i\\>');
+  contains('html: implicitly closed <li> kept', html, '<ul><li>first<li>second</ul>');
+  contains('html: multi-line table kept', html, '<table>\n * <tr><td>cell</td></tr>\n * </table>');
+  contains('html: balanced across a {@link} kept', html,
+    '<b>see @ref src::html::realTable "realTable"</b>');
+  contains('html: opened in the description, closed in @return: both escaped', html,
+    'Opens \\<b\\>in the description');
+  contains('html: ... and the end tag in @return', html, 'closes it here\\</b\\>');
+  contains('html: empty-tag form escaped', html, 'form \\<b/\\> is');
+  contains('html: tag in a code span stays code', html, '<tt>\\<table\\></tt>');
+  contains('html: lone <p> escaped', html, 'a lone \\<p\\> stays');
+  for (const [input, want] of [
+    ['<img src="a.png">', '<img src="a.png">'],
+    ['<b>a</b> </b>', '<b>a</b> \\</b\\>'],
+    ['<b>a <b>b</b>', '\\<b\\>a <b>b</b>'],
+    ['<p>one</p>', '<p>one</p>'],
+    ['<ul><li>a <b>x</ul>', '<ul><li>a \\<b\\>x</ul>'],
+    ['</br>', '\\</br\\>'],
+    ['<TABLE>x', '\\<TABLE\\>x'],
+  ]) {
+    check(`html: escapeText(${JSON.stringify(input)})`, escapeText(input) === want,
+      `got ${escapeText(input)}`);
+  }
+}
 
 // TSDoc `@param name - description`
 contains('TSDoc hyphen stripped from @param', docs, '@param input the raw label');
@@ -688,6 +723,24 @@ if (!doxVersion) {
     'src::shapes::Circle');
 
   // phase 2: the converted documentation as Doxygen resolved it
+  {
+    const htmlXml = readXml('namespacesrc_1_1html.xml');
+    contains('doxygen html: unbalanced <table> shown literally', htmlXml,
+      'The #settings-list &lt;table&gt;.');
+    contains('doxygen html: lone end tag shown literally', htmlXml, 'opened: &lt;/b&gt; here');
+    contains('doxygen html: balanced <b> is bold', htmlXml, '<bold>bold</bold>');
+    contains('doxygen html: <br> is a line break', htmlXml, 'a break<linebreak/>');
+    contains('doxygen html: misnested markup keeps the bold pair', htmlXml,
+      '<bold>&lt;i&gt;both</bold>&lt;/i&gt;');
+    check('doxygen html: implicitly closed items make a two-item list',
+      /<itemizedlist>\s*<listitem>\s*<para>first<\/para>\s*<\/listitem>\s*<listitem>\s*<para>second/.test(htmlXml));
+    contains('doxygen html: the multi-line table is a table', htmlXml, '<table rows="1" cols="1">');
+    check('doxygen html: bold around a resolved {@link}',
+      /<bold>see <ref [^>]*>realTable<\/ref><\/bold>/.test(htmlXml));
+    contains('doxygen html: cross-section tags shown literally', htmlXml, 'closes it here&lt;/b&gt;');
+    contains('doxygen html: empty-tag form shown literally', htmlXml, 'form &lt;b/&gt; is');
+  }
+
   const docsXml = readXml('namespacesrc_1_1docs.xml');
   contains('doxygen: {@link} resolved to a class reference', docsXml,
     'refid="classsrc_1_1shapes_1_1Circle" kindref="compound">src::shapes::Circle</ref>');

@@ -9,9 +9,10 @@
  */
 
 /**
- * HTML elements Doxygen understands inside a comment. A `<` that opens one of
- * these is left alone; any other `<` is escaped, so `Array<T>` in prose stays
- * readable text instead of turning into a stray tag.
+ * HTML elements Doxygen understands inside a comment. A tag of one of these is
+ * passed through when it is used as markup (see `planHtml`); any other `<` is
+ * escaped, so `Array<T>` in prose stays readable text instead of turning into
+ * a stray tag.
  */
 const HTML_TAGS = [
   'a', 'b', 'blockquote', 'br', 'caption', 'center', 'cite', 'code', 'dd',
@@ -21,9 +22,80 @@ const HTML_TAGS = [
   'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'tt', 'u', 'ul', 'var',
 ];
 
+/** Elements without content or end tag. */
+const VOID_TAGS = new Set(['br', 'hr', 'img']);
+
+/**
+ * Elements whose end tag may be left out: Doxygen, like HTML, closes them
+ * when the element around them ends (`<ul><li>a<li>b</ul>`).
+ */
+const OPTIONAL_END_TAGS = new Set(['li', 'p', 'dt', 'dd', 'tr', 'td', 'th', 'thead', 'tbody', 'tfoot']);
+
+/** A known HTML tag; groups: `/` of an end tag, the name, `/` of `<x/>`. */
+const HTML_TAG = `<(/?)(${HTML_TAGS.join('|')})(?:\\s[^<>]*?)?(/?)>`;
+
 /** A known HTML tag, or an HTML entity such as `&amp;` / `&#160;`. */
 const HTML_MARKUP = `</?(?:${HTML_TAGS.join('|')})(?:\\s[^<>]*)?/?>`
   + '|&(?:[A-Za-z][A-Za-z0-9]*|#[0-9]+|#[xX][0-9A-Fa-f]+);';
+
+/** Code spans and fences, which escapeText leaves to Doxygen verbatim. */
+const CODE_SPANS = /(```[\s\S]*?```|`[^`]*`)/g;
+
+/**
+ * Decide, for every known HTML tag in one section of comment text, whether it
+ * is markup to pass through or text to escape.
+ *
+ * Doxygen warns about a tag it cannot pair -- `The <table>.` gives "expected
+ * <tr> tag but found TK_WORD token instead!", a lone `</b>` "found </b> tag
+ * without matching <b>" -- and the pairing is per section: a `<b>` opened in
+ * the description and closed in `@return` warns too. So a section is one run
+ * of text Doxygen parses as a unit (a comment's description, or the text of
+ * one tag), and within it a tag is kept when
+ *   - it is a void tag (`<br>`, `<br/>`, `<hr>`, `<img ...>`), or
+ *   - it pairs with its end tag, matched as a stack so that misnested markup
+ *     (`<b><i>x</b></i>`) keeps only the pair that nests, or
+ *   - its end tag is optional and the element around it is closed
+ *     (`<ul><li>a<li>b</ul>`).
+ * Everything else is escaped and shows literally. A non-void tag in the
+ * empty-tag form (`<b/>`) is escaped too, Doxygen rejects that syntax.
+ *
+ * @param {string[]} texts the raw pieces of the section, in order (a comment
+ *   is escaped piecewise around its `{@link}`s)
+ * @returns {{keep: boolean[]}} one decision per tag, consumed in order by
+ *   `escapeText`
+ */
+function planHtml(texts) {
+  const tags = [];
+  for (const text of texts) {
+    String(text || '').split(CODE_SPANS).forEach((part, i) => {
+      if (i % 2 === 1) return;
+      for (const m of part.matchAll(new RegExp(HTML_TAG, 'gi'))) {
+        tags.push({ close: m[1] === '/', name: m[2].toLowerCase(), empty: m[3] === '/' });
+      }
+    });
+  }
+  const keep = tags.map(() => false);
+  const open = [];
+  tags.forEach((tag, i) => {
+    if (VOID_TAGS.has(tag.name)) {
+      keep[i] = !tag.close;
+    } else if (tag.empty) {
+      // rejected by Doxygen; stays escaped
+    } else if (!tag.close) {
+      open.push(i);
+    } else {
+      const at = open.map((j) => tags[j].name).lastIndexOf(tag.name);
+      if (at < 0) return;
+      keep[open[at]] = true;
+      keep[i] = true;
+      // Elements left open inside it end here: implicitly where the end tag
+      // is optional, otherwise they were never closed.
+      for (const j of open.slice(at + 1)) keep[j] = OPTIONAL_END_TAGS.has(tags[j].name);
+      open.length = at;
+    }
+  });
+  return { keep };
+}
 
 /**
  * Escape text taken from a source comment so Doxygen reads it as prose.
@@ -33,11 +105,11 @@ const HTML_MARKUP = `</?(?:${HTML_TAGS.join('|')})(?:\\s[^<>]*)?/?>`
  * meaningful as written: `backtick` spans and fenced code blocks (verbatim for
  * Doxygen), and the inline HTML tags and entities Doxygen supports.
  */
-function escapeText(text) {
+function escapeText(text, plan = planHtml([text])) {
   if (!text) return '';
   // A markdown code span may span lines, and Doxygen renders it as one; the
   // pattern has to match that or the backticks would be escaped apart.
-  const parts = String(text).split(/(```[\s\S]*?```|`[^`]*`)/g);
+  const parts = String(text).split(CODE_SPANS);
   return parts
     .map((part, i) => {
       // A backtick left over after the paired spans were taken out opens a
@@ -46,7 +118,7 @@ function escapeText(text) {
       // declaration; 1.9.8 only mis-renders it. Doxygen has no escape for a
       // backtick and does not decode `&#96;` in prose, so the character is
       // replaced by an apostrophe.
-      if (i % 2 === 0) return escapeProse(part).replace(/`/g, "'");
+      if (i % 2 === 0) return escapeProse(part, plan).replace(/`/g, "'");
       // Fenced blocks are left as they are: Doxygen turns them into a code
       // block. A single-backtick span becomes `<tt>` instead, because
       // Doxygen's own handling of those is fragile -- an apostrophe in the
@@ -60,10 +132,19 @@ function escapeText(text) {
     .join('');
 }
 
-function escapeProse(text) {
+/**
+ * Escape prose, leaving entities and the HTML tags `plan` keeps (by default:
+ * those balanced within `text` itself).
+ */
+function escapeProse(text, plan = planHtml([text])) {
   const parts = String(text).split(new RegExp(`(${HTML_MARKUP})`, 'i'));
   return parts
-    .map((part, i) => (i % 2 === 1 ? part : escapePlain(part)))
+    .map((part, i) => {
+      if (i % 2 === 0) return escapePlain(part);
+      if (part.startsWith('&')) return part;
+      // `plan` lists the tags of the whole section in order; take this one's.
+      return plan.keep.shift() ? part : escapePlain(part);
+    })
     .join('');
 }
 
@@ -263,5 +344,6 @@ module.exports = {
   escapePlain,
   escapeProse,
   escapeText,
+  planHtml,
   neutralizeCommentDelimiters,
 };

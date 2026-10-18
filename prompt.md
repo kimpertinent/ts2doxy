@@ -434,7 +434,7 @@ the node cache, ~17 s with a shell wrapper, ~10 s with pregen. The wrapper
 was **not** built at first; at review both open questions were decided: build
 the wrapper, and add `--no-cache` and `--cache-dir` (next section).
 
-## Shell wrapper, `--no-cache`, `--cache-dir`: done (awaiting review)
+## Shell wrapper, `--no-cache`, `--cache-dir`: done
 
 * `bin/ts2doxy-filter.sh` (POSIX sh, checked with dash and `bash --posix`)
   takes the arguments of `ts2doxy.js`, rebuilds the cache key, finds the
@@ -494,3 +494,39 @@ Observed, not investigated (out of scope): on 1.18.0 TypeORM gives one
 warning that may come from the translation, `Column.ts:103: unexpected token
 TK_COMMAND_AT in comment block while parsing the argument of command param`,
 in addition to the nine known partially documented MongoDB parameters.
+
+## Inline HTML pairing: done (awaiting review)
+
+Bug: a supported HTML tag in prose was passed through even when meant
+literally; `/** The #settings-list <table>. */` gave "expected <tr> tag but
+found TK_WORD token instead!". Now (`planHtml` in `src/doc.js`) a tag is
+markup only when it is a void tag (`br`, `hr`, `img`) or pairs with its end
+tag within the same section; everything else is escaped and shown literally.
+
+Decided by running Doxygen 1.18.0 on hand-written C++ comments first:
+
+* Pairing is per **section** (a comment's description, or one tag's text),
+  not per comment: `<b>` in the description closed in `@return` warns
+  ("found </b> at different nesting level", "end of comment block while
+  expecting command </b>"). This is stricter than "within the same comment",
+  which would still have produced warnings. A blank line inside a pair is
+  fine; a `{@link}` inside a section does not split it (the pieces around a
+  link share one plan).
+* Matching is a stack: misnested `<b><i>x</b></i>` warns, and keeping the
+  `<b>` pair while escaping the `<i>` tags does not.
+* Tags with an optional end tag (`li`, `p`, `dt`, `dd`, `tr`, `td`, `th`,
+  `thead`, `tbody`, `tfoot`) count as closed when the element around them is
+  closed: Doxygen accepts `<ul><li>a<li>b</ul>` and warns when those `<li>`
+  are escaped. A lone `<p>` or `<li>` is escaped.
+* The empty-tag form of a non-void tag (`<b/>`, `<table/>`) warns and is
+  escaped; `<br/>` is fine.
+
+Not handled, documented as a limitation: structure. A balanced
+`<table>…</table>` with no `<tr>` still warns.
+
+New fixture `test/fixtures/src/html.ts`, one declaration per case. With the
+previous filter it gives eight lines of Doxygen warnings, the reported one
+among them; now none. Tests check the translation, Doxygen's XML (literal
+`&lt;table&gt;`, `<bold>`, a two-item list, a table, bold around a `<ref>`)
+and `escapeText` directly; forcing every tag to be kept fails 19 of them.
+`npm test` against Doxygen 1.18.0: **843 checks passed, 0 failed**.
